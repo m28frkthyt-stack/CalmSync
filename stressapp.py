@@ -7,10 +7,12 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
+APP_VERSION = "v0.9.0-demo"
+
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CSS (pastel overlay + centered/bordered graph box)
+# CSS (pastel overlay + centered/bordered graph box + footer)
 # ──────────────────────────────────────────────────────────────────────────────
 def read_css_file(name: str) -> str:
     try:
@@ -64,6 +66,9 @@ body { background: var(--pink-bg) !important; }
 .section-title .label { background:#ffd7e6; color:#8a3a5b; padding:4px 8px; border-radius:10px; font-weight:600; }
 
 .explain { font-size:0.9rem; color:#6a4b58; font-style:italic; margin-top:4px; }
+
+/* Footer */
+.footer { text-align:center; color:#8a3a5b; font-size:0.8rem; opacity:0.9; margin: 18px 0 6px; }
 """
 
 def inject_css():
@@ -71,6 +76,9 @@ def inject_css():
     css = read_css_file("initial.css") if page == "initial" else (
           read_css_file("homepage.css") if page in ("home", "accept", "rec") else read_css_file("afterquestions.css"))
     st.markdown(f"<style>{css}\n{PASTEL_OVERLAY}</style>", unsafe_allow_html=True)
+
+def render_footer():
+    st.markdown(f"<div class='footer'>{APP_VERSION}</div>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Session state
@@ -84,11 +92,11 @@ def ss_init():
     ])
     ss.setdefault("favorite_activities", [])
     ss.setdefault("custom_activities", [])
-    # model: learned value (avg reward) and user preference (nudged by "more often?")
+    # model: learned value (avg reward) and a small user preference term (kept for extensibility)
     ss.setdefault("model", {"overall": {}})
     ss.setdefault("last_recommendation", None)      # {activity, start?, duration?}
-    ss.setdefault("epsilon", 0.05)                  # LESS exploration so bad picks don't reappear often
-    ss.setdefault("tau", 0.8)                       # softmax temperature
+    ss.setdefault("epsilon", 0.05)                  # exploration
+    ss.setdefault("tau", 0.8)                       # softmax temp
     ss.setdefault("calendar_url", "")
     ss.setdefault("calendar_events", [])
     ss.setdefault("calendar_last_status", "")
@@ -110,7 +118,7 @@ inject_css()
 def now_local() -> datetime:
     return datetime.now() + timedelta(days=st.session_state.get("demo_day_offset", 0))
 
-# Weather (header info only)
+# Weather (header info only; not used by model)
 EHV_LAT, EHV_LON = 51.4416, 5.4697
 def fetch_weather():
     try:
@@ -216,7 +224,7 @@ def list_available_slots(day_dt: datetime, duration_min: int):
     return slots
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Bandit (ε-greedy + softmax) — peaks/weather agnostic; no penalties
+# Bandit (ε-greedy + softmax) — learns from delta stress (−5..+5) + small exp boost
 # ──────────────────────────────────────────────────────────────────────────────
 def bandit_choose(favorites, epsilon=0.05, tau=0.8):
     model = st.session_state["model"]["overall"]
@@ -227,13 +235,9 @@ def bandit_choose(favorites, epsilon=0.05, tau=0.8):
         scores.append((act, s))
     if not scores:
         return None, {}
-
-    # Exploration
     if random() < epsilon:
         import random as _r
         return _r.choice([a for a, _ in scores]), dict(scores)
-
-    # Softmax sample
     m = max(s for _, s in scores)
     exps = [(a, math.exp((s - m) / max(1e-6, tau))) for a, s in scores]
     total = sum(v for _, v in exps) or 1.0
@@ -243,36 +247,25 @@ def bandit_choose(favorites, epsilon=0.05, tau=0.8):
         if r <= cum: return a, dict(scores)
     return exps[-1][0], dict(scores)
 
-def bandit_update(activity, stress_after, exp_rating, more_often_choice):
-    """Update with NO reference to peaks or 'pre' stress.
-    Reward focuses on how you felt after + your experience."""
+def bandit_update(activity, delta_stress, exp_rating):
+    """delta_stress: −5..+5 (positive means stress went down).
+       reward = delta + small experience boost (can be negative)."""
     stats = st.session_state["model"]["overall"].setdefault(activity, {"n":0,"value":0.0,"pref":0.0})
+    delta = float(delta_stress)         # −5..+5
+    xp    = 0.2 * (float(exp_rating) - 5.0)  # −1.0..+1.0
+    reward = delta + xp                  # may be negative → that's okay
 
-    # Reward design:
-    # - Main signal: lower stress_after is better → (10 - stress_after)
-    # - Secondary: experience rating centered at 5 → small boost/penalty
-    # - Clamp at >= 0 to avoid punishing more than necessary
-    main = max(0.0, 10 - float(stress_after))             # 0..9
-    xp   = 0.3 * (float(exp_rating) - 5.0)                # -1.5..+1.5
-    reward = max(0.0, main + xp)
-
-    # Update running average value
     n = stats["n"] + 1
     stats["value"] = stats["value"] + (reward - stats["value"]) / n
     stats["n"] = n
-
-    # Preference nudged by “more often?”
-    if more_often_choice == "Yes":
-        stats["pref"] = min(3.0, stats["pref"] + 0.3)
-    elif more_often_choice == "No":
-        stats["pref"] = max(-3.0, stats["pref"] - 0.3)
+    # keep pref available for future extensions; not used now
 
 # ICS export
 def make_ics(summary, start_dt, duration_min, description=""):
     end_dt = start_dt + timedelta(minutes=duration_min)
     fmt = lambda dt: dt.strftime("%Y%m%dT%H%M%S")
     uid = f"{int(time.time())}-{abs(hash(summary))}@stress-aware"
-    desc = description.replace("\n", " ")
+    desc = description.replace("\\n", " ")
     ics = [
         "BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//StressAware//BreakScheduler//EN","BEGIN:VEVENT",
         f"UID:{uid}", f"DTSTAMP:{fmt(now_local())}", f"DTSTART:{fmt(start_dt)}", f"DTEND:{fmt(end_dt)}",
@@ -336,27 +329,28 @@ def svg_img_tag(svg_str: str, w=288, h=120) -> str:
     return f"<img alt='stress sparkline' src='data:image/svg+xml;utf8,{encoded}' width='{w}' height='{h}'/>"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Textual AI explanation (no numbers)
+# Textual AI explanation (no numbers; adapted to delta scale)
 # ──────────────────────────────────────────────────────────────────────────────
 def expectation_text(activity: str) -> str:
     stats = st.session_state["model"]["overall"].get(activity, {"n": 0, "value": 0.0})
     n = stats.get("n", 0)
-    mean_reward = stats.get("value", 0.0)
+    mean = stats.get("value", 0.0)  # can be negative to positive
 
     if n == 0:
         return "I don’t know yet — let’s try this and learn what works for you."
 
-    if mean_reward < 1.0:
-        phrase = "a subtle easing of stress"
-    elif mean_reward < 2.5:
-        phrase = "a modest drop in stress"
-    elif mean_reward < 4.5:
-        phrase = "a noticeable drop in stress"
-    elif mean_reward < 6.5:
-        phrase = "a strong reduction in stress"
-    else:
-        phrase = "a very strong reduction in stress"
-    return f"Expected to provide {phrase}."
+    # Friendly mapping based on mean (rough bands for −5..+5)
+    if mean <= -2.5:
+        return "May increase stress for you; consider alternatives."
+    if mean < -0.5:
+        return "Tends to feel counter-productive based on past feedback."
+    if mean < 0.5:
+        return "Mixed effects so far — might help, might not."
+    if mean < 2.5:
+        return "Expected to provide a modest drop in stress."
+    if mean < 4.0:
+        return "Expected to provide a noticeable drop in stress."
+    return "Often provides a strong reduction in stress."
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pages
@@ -408,19 +402,20 @@ def page_initial():
     if st.button("Next →", use_container_width=True, type="primary"):
         selected = [a for a in st.session_state["all_activities"] if st.session_state.get(f"chk_{a}", False)]
         if len(selected) < 3:
-            st.warning("Please pick at least three activities."); return
+            st.warning("Please pick at least three activities."); render_footer(); return
         st.session_state["favorite_activities"] = selected
         st.session_state["page"] = "home"
         st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
+    render_footer()
 
 def page_home():
-    # Header info (weather) + demo stress sparkline
+    # Header info (weather) + demo stress sparkline for deciding if a break is suggested today
     st.session_state["weather"] = fetch_weather()
     ensure_series_for_demo_day()
     series = st.session_state.get("fitbit_series_today") or []
     peaks = st.session_state.get("fitbit_peaks_today", 0)
-    high_stress = peaks > 4  # peaks ONLY decide whether we propose a break now
+    high_stress = peaks > 4
 
     day_label = now_local().strftime("%a %d %b")
     precip = f"{st.session_state['weather']['precip']:.1f}"
@@ -498,13 +493,13 @@ def page_home():
             + "</div>", unsafe_allow_html=True
         )
     st.markdown("</div></div>", unsafe_allow_html=True)
+    render_footer()
 
 def page_rec():
     rec = st.session_state.get("last_recommendation")
     if not rec:
         st.session_state["page"] = "home"; st.rerun(); return
     act = rec["activity"]
-
     explain = expectation_text(act)
 
     st.markdown(f"""
@@ -533,6 +528,7 @@ def page_rec():
         st.rerun()
     if accept:
         st.session_state["page"] = "accept"; st.rerun()
+    render_footer()
 
 def page_accept():
     rec = st.session_state.get("last_recommendation")
@@ -590,6 +586,7 @@ def page_accept():
         st.session_state["page"] = "rec"; st.rerun()
     if did and chosen_start:
         st.session_state["page"] = "after"; st.rerun()
+    render_footer()
 
 def page_after():
     rec = st.session_state.get("last_recommendation")
@@ -600,24 +597,26 @@ def page_after():
       <div class="card">
         <div class="badge">Feedback</div>
         <div class="h1">How did it go?</div>
-        <p class="p">Help me learn which activities reduce your stress most.</p>
+        <p class="p">Tell me how the break changed your stress.</p>
         <div class="p">Activity: <b>{activity}</b></div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    stress_after = st.slider("Stress level after activity (1–10)", 1, 10, 4, key="stress_after_slider")
-    exp_rating  = st.slider("Experience rating (1–10)", 1, 10, 7, key="exp_rating_slider")
-    more_often  = st.selectbox("Would you like to do this activity more often?", ["Yes", "Maybe", "No"], index=0)
+    # NEW: delta stress slider (centered scale −5..+5)
+    delta = st.slider("How much did your stress change? (−5 = much worse, +5 = much better)",
+                      min_value=-5, max_value=5, value=1, step=1)
+    exp_rating  = st.slider("Experience rating (1–10)", 1, 10, 7)
 
     next_day_btn = st.button("Next day ▶", use_container_width=True)
     if next_day_btn:
-        bandit_update(activity, stress_after, exp_rating, more_often)
+        bandit_update(activity, delta_stress=delta, exp_rating=exp_rating)
         st.session_state["last_recommendation"] = None
         st.session_state["demo_day_offset"] += 1
         st.session_state["fitbit_series_today_key"] = None
         st.session_state["page"] = "home"
         st.rerun()
+    render_footer()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Router
