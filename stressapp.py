@@ -7,12 +7,12 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
-APP_VERSION = "v0.9.3-demo"
+APP_VERSION = "v0.9.4-demo"
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CSS — small pill buttons + full-width action buttons, centered layout
+# CSS — centered layout + stable pill styling via multiselect chips
 # ──────────────────────────────────────────────────────────────────────────────
 def read_css_file(name: str) -> str:
     try:
@@ -75,33 +75,17 @@ body {
   font-size: 1rem;
 }
 
-/* Default BUTTONS -> pill-sized, inline (for favorites) */
-.stButton>button {
-  display: inline-block !important;
-  width: auto !important;
-  border-radius: 999px !important;
-  border: 1px solid #f7c2d6 !important;
-  padding: 6px 10px !important;
-  margin: 6px !important;
-  font-size: 0.9rem !important;
-  font-weight: 600 !important;
-  background: #ffeaf2 !important;
-  color: #6d2f4a !important;
-}
-
-/* Selected pill uses "primary" style (we set type='primary' in code) */
-.stButton>button[kind="primary"] {
-  background: linear-gradient(90deg, var(--pink-acc), var(--pink-acc-2)) !important;
-  color: #fff !important;
-  border-color: transparent !important;
-}
-
-/* ACTION sections override to full-width, larger padding */
+/* Full-width action buttons area */
 .actions .stButton>button {
   width: 100% !important;
   padding: 12px 16px !important;
   margin: 10px 0 22px 0 !important;
   font-size: 1rem !important;
+  border-radius: 999px !important;
+  border: 0 !important;
+  background: linear-gradient(90deg, var(--pink-acc), var(--pink-acc-2)) !important;
+  color: #fff !important;
+  font-weight: 700 !important;
 }
 
 /* Stress graph centered */
@@ -152,6 +136,39 @@ body {
   opacity: 0.9;
   margin: 40px 0 14px;
 }
+
+/* ───────────────
+   Multiselect → small pill chips
+   We target Streamlit's token chips to make them small, pastel, and tappable.
+   ─────────────── */
+div[data-baseweb="select"] > div { 
+  border-radius: 14px; 
+  border: 1px solid #f7c2d6;
+}
+div[data-baseweb="select"] div[role="listbox"] { 
+  border-radius: 12px;
+}
+
+.stMultiSelect [data-baseweb="tag"] {
+  background: #ffeaf2 !important;
+  border: 1px solid #f7c2d6 !important;
+  color: #6d2f4a !important;
+  border-radius: 999px !important;
+  padding: 2px 8px !important;
+  margin: 4px !important;
+  font-weight: 600 !important;
+  font-size: 0.85rem !important;
+}
+
+.stMultiSelect [data-baseweb="tag"] span {
+  color: #6d2f4a !important;
+}
+
+/* Dropdown options styling */
+.stMultiSelect [data-baseweb="menu"] div[role="option"] {
+  padding: 8px 10px;
+}
+
 """
 
 def inject_css():
@@ -174,7 +191,6 @@ def ss_init():
         "Power nap", "Quick tidy-up", "Listen to calm track"
     ])
     ss.setdefault("favorite_activities", [])
-    ss.setdefault("selected_map", {})  # {activity: bool}
     ss.setdefault("custom_activities", [])
     ss.setdefault("model", {"overall": {}})
     ss.setdefault("last_recommendation", None)
@@ -191,7 +207,6 @@ def ss_init():
     ss.setdefault("fitbit_series_today_key", None)
     for a in ss["all_activities"]:
         ss["model"]["overall"].setdefault(a, {"n": 0, "value": 0.0})
-        ss["selected_map"].setdefault(a, False)
 
 ss_init()
 inject_css()
@@ -409,25 +424,6 @@ def expectation_text(activity):
     return "Often provides a strong reduction in stress."
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Favorite pills renderer (small, pressable, multiple per row & centered)
-# ──────────────────────────────────────────────────────────────────────────────
-def render_fav_pills(options, per_row=3):
-    """Render activities as small pill buttons. Selected -> primary, unselected -> secondary."""
-    if not options: return
-    # Make rows
-    for i in range(0, len(options), per_row):
-        row = options[i:i+per_row]
-        cols = st.columns(len(row), gap="small")
-        for c, a in zip(cols, row):
-            with c:
-                selected = st.session_state["selected_map"].get(a, False)
-                if st.button(a, key=f"pill_{a}", type=("primary" if selected else "secondary")):
-                    st.session_state["selected_map"][a] = not selected
-
-def get_selected_favorites():
-    return [a for a, on in st.session_state["selected_map"].items() if on and a in st.session_state["all_activities"]]
-
-# ──────────────────────────────────────────────────────────────────────────────
 # Pages
 # ──────────────────────────────────────────────────────────────────────────────
 def page_initial():
@@ -436,14 +432,21 @@ def page_initial():
       <div class='card'>
         <div class='badge'>Step 1</div>
         <div class='h1'>Let’s create your personal advice!</div>
-        <p class='p'>Tap to select at least three favorite activities. You can add your own too.</p>
+        <p class='p'>Pick at least three favorite activities. Add your own if you like.</p>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<div class='wrapper'>", unsafe_allow_html=True)
-    render_fav_pills(st.session_state["all_activities"], per_row=3)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Favorites via robust multiselect (styled as pill chips)
+    current_defaults = st.session_state.get("favorite_activities", [])
+    selected = st.multiselect(
+        "Your favorite activities",
+        st.session_state["all_activities"],
+        default=current_defaults,
+        label_visibility="collapsed",
+        key="fav_multiselect",
+        help="Tap to toggle. Multiple per row."
+    )
 
     # Add custom activity
     st.markdown("<div class='wrapper'><div class='card'><div class='badge'>Add custom activity</div>", unsafe_allow_html=True)
@@ -456,7 +459,9 @@ def page_initial():
                 na = new_act.strip()
                 st.session_state["all_activities"].append(na)
                 st.session_state["model"]["overall"].setdefault(na, {"n":0,"value":0.0})
-                st.session_state["selected_map"][na] = True
+                # Update multiselect defaults immediately
+                selected = list(selected) + [na]
+                st.session_state["fav_multiselect"] = selected
                 st.rerun()
     st.markdown("</div></div>", unsafe_allow_html=True)
 
@@ -479,8 +484,7 @@ def page_initial():
 
     # Next (full-width)
     st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
-    if st.button("Next →", use_container_width=True, type="primary"):
-        selected = get_selected_favorites()
+    if st.button("Next →", use_container_width=True):
         if len(selected) < 3:
             st.warning("Please select at least three activities.")
         else:
@@ -503,13 +507,13 @@ def page_home():
                 f"{st.session_state['weather']['precip']:.1f}mm · wind "
                 f"{st.session_state['weather']['wind']:.1f}m/s</div></div>", unsafe_allow_html=True)
 
-    # Stress graph (centered)
+    # Stress graph
     st.markdown("<div class='wrapper'><div class='block'><div class='badge'>Stress Overview</div>"
                 "<div class='stress-visual-wrap'><div class='stress-visual'><div class='viz-label'>Demo stress (Fitbit-like)</div>"
                 f"{svg_tag(series_svg(series))}</div></div>"
                 f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div></div></div>", unsafe_allow_html=True)
 
-    # Actions (full-width)
+    # Actions
     msg = "High stress detected — a break is recommended" if high else "No excess stress — you can schedule a break"
     st.markdown(f"<div class='wrapper'><div class='badge'>{msg}</div></div>", unsafe_allow_html=True)
 
@@ -539,7 +543,6 @@ def page_home():
         else:
             st.info("No favorites saved yet. Go back to add some.")
     st.markdown("</div>", unsafe_allow_html=True)
-
     render_footer()
 
 def page_rec():
@@ -579,11 +582,9 @@ def page_accept():
     if not rec: st.session_state["page"]="home"; st.rerun(); return
     act = rec["activity"]
 
-    # Duration
     dur = st.slider("Duration (minutes)", 15, 60, st.session_state["accept_duration"], step=5)
     st.session_state["accept_duration"] = dur
 
-    # Whole/half-hour start selection with busy checks
     slots = list_available_slots(now_local(), dur)
     if slots:
         labels = [s.strftime("%H:%M") for s in slots]
