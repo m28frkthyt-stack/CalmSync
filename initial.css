@@ -1,0 +1,65 @@
+body {
+  background-color: #ffc6d0;
+  font-family: Arial, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
+}
+
+.container {
+  background-color: #ffc6d0;
+  padding: 20px;
+  width: 320px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+h2 {
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.description {
+  font-size: 12px;
+  color: #333;
+  margin-bottom: 20px;
+}
+
+h3 {
+  font-size: 16px;
+  margin-bottom: 10px;
+  text-align: left;
+}
+
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 25px;
+}
+
+.activity {
+  background-color: white;
+  border: none;
+  padding: 12px;
+  border-radius: 25px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.activity:hover {
+  background-color: #ff5b88;
+}
+
+.next {
+  background-color: #6e6e6e;
+  color: white;
+  border: none;
+  padding: 12px 40px;
+  border-radius: 30px;
+  font-size: 16px;
+  cursor: pointer;
+}
