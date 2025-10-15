@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CSS (keeps your templates; pastel overlay + centered/bordered graph box)
+# CSS (pastel overlay + centered/bordered graph box)
 # ──────────────────────────────────────────────────────────────────────────────
 def read_css_file(name: str) -> str:
     try:
@@ -26,7 +26,7 @@ body { background: var(--pink-bg) !important; }
 .badge { background:#ffd7e6 !important; color:#8a3a5b !important; border-radius:999px; padding:6px 10px; font-weight:600; }
 .card, .block, .rec-card { background:#ffffffcc !important; box-shadow:0 8px 30px rgba(255,106,169,0.15)!important; border-radius:16px!important; }
 .rec-title, .h1, .hello { color:var(--ink-2) !important; }
-.sub, .p, .small { color:var(--ink) !important; }
+.sub, .p, .small { color:#5a3f4a !important; }
 .header .sub { margin-top:2px; font-size:0.92rem; }
 
 .stButton>button[kind="primary"], .stButton>button {
@@ -36,7 +36,6 @@ body { background: var(--pink-bg) !important; }
 }
 .stButton>button:hover { filter:brightness(0.98); }
 
-/* Key-value rows */
 .kv { display:flex; justify-content:space-between; gap:12px; margin:6px 0; }
 .kv span:first-child { color:#7f5b69; }
 .kv span:last-child { font-weight:600; color:#492635; }
@@ -54,20 +53,16 @@ body { background: var(--pink-bg) !important; }
   padding:2px 8px; border-radius:999px; display:inline-block;
 }
 
-/* Favorites as centered pills */
 .fav-wrap { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin-top:8px; }
 .fav-pill { background:#ffeaf2; color:#6d2f4a; border:1px solid #f7c2d6; padding:6px 10px; border-radius:999px; font-size:0.9rem; font-weight:600; }
 
-/* Spacers */
 .spacer-8 { height:8px; }
 .spacer-12 { height:12px; }
 .spacer-16 { height:16px; }
 
-/* Section badge */
 .section-title { display:flex; align-items:center; gap:8px; }
 .section-title .label { background:#ffd7e6; color:#8a3a5b; padding:4px 8px; border-radius:10px; font-weight:600; }
 
-/* Explanation text */
 .explain { font-size:0.9rem; color:#6a4b58; font-style:italic; margin-top:4px; }
 """
 
@@ -91,11 +86,9 @@ def ss_init():
     ss.setdefault("custom_activities", [])
     # model: learned value (avg reward) and user preference (nudged by "more often?")
     ss.setdefault("model", {"overall": {}})
-    ss.setdefault("last_recommendation", None)      # {activity, pre_stress, start?, duration?}
-    ss.setdefault("weather", None)                  # kept for header only (not used by model)
-    ss.setdefault("epsilon", 0.15)                  # exploration prob
+    ss.setdefault("last_recommendation", None)      # {activity, start?, duration?}
+    ss.setdefault("epsilon", 0.05)                  # LESS exploration so bad picks don't reappear often
     ss.setdefault("tau", 0.8)                       # softmax temperature
-    ss.setdefault("pre_stress", 6)                  # auto-set per day
     ss.setdefault("calendar_url", "")
     ss.setdefault("calendar_events", [])
     ss.setdefault("calendar_last_status", "")
@@ -117,7 +110,7 @@ inject_css()
 def now_local() -> datetime:
     return datetime.now() + timedelta(days=st.session_state.get("demo_day_offset", 0))
 
-# Weather (header only; no effect on model)
+# Weather (header info only)
 EHV_LAT, EHV_LON = 51.4416, 5.4697
 def fetch_weather():
     try:
@@ -223,23 +216,24 @@ def list_available_slots(day_dt: datetime, duration_min: int):
     return slots
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Bandit (ε-greedy + softmax) — agnostic to weather; no penalties
+# Bandit (ε-greedy + softmax) — peaks/weather agnostic; no penalties
 # ──────────────────────────────────────────────────────────────────────────────
-def bandit_choose(favorites, epsilon=0.15, tau=0.8):
+def bandit_choose(favorites, epsilon=0.05, tau=0.8):
     model = st.session_state["model"]["overall"]
-    # Compute scores from learned value + user preference only
     scores = []
     for act in favorites:
         stats = model.get(act, {"n":0,"value":0.0,"pref":0.0})
         s = stats["value"] + stats["pref"]
         scores.append((act, s))
-    # Exploration
-    if random() < epsilon and favorites:
-        import random as _r
-        return _r.choice(favorites), dict(scores)
-    # Softmax sample
     if not scores:
         return None, {}
+
+    # Exploration
+    if random() < epsilon:
+        import random as _r
+        return _r.choice([a for a, _ in scores]), dict(scores)
+
+    # Softmax sample
     m = max(s for _, s in scores)
     exps = [(a, math.exp((s - m) / max(1e-6, tau))) for a, s in scores]
     total = sum(v for _, v in exps) or 1.0
@@ -249,12 +243,25 @@ def bandit_choose(favorites, epsilon=0.15, tau=0.8):
         if r <= cum: return a, dict(scores)
     return exps[-1][0], dict(scores)
 
-def bandit_update(activity, reward, more_often_choice):
+def bandit_update(activity, stress_after, exp_rating, more_often_choice):
+    """Update with NO reference to peaks or 'pre' stress.
+    Reward focuses on how you felt after + your experience."""
     stats = st.session_state["model"]["overall"].setdefault(activity, {"n":0,"value":0.0,"pref":0.0})
+
+    # Reward design:
+    # - Main signal: lower stress_after is better → (10 - stress_after)
+    # - Secondary: experience rating centered at 5 → small boost/penalty
+    # - Clamp at >= 0 to avoid punishing more than necessary
+    main = max(0.0, 10 - float(stress_after))             # 0..9
+    xp   = 0.3 * (float(exp_rating) - 5.0)                # -1.5..+1.5
+    reward = max(0.0, main + xp)
+
+    # Update running average value
     n = stats["n"] + 1
     stats["value"] = stats["value"] + (reward - stats["value"]) / n
     stats["n"] = n
-    # preference from “more often?”
+
+    # Preference nudged by “more often?”
     if more_often_choice == "Yes":
         stats["pref"] = min(3.0, stats["pref"] + 0.3)
     elif more_often_choice == "No":
@@ -329,7 +336,7 @@ def svg_img_tag(svg_str: str, w=288, h=120) -> str:
     return f"<img alt='stress sparkline' src='data:image/svg+xml;utf8,{encoded}' width='{w}' height='{h}'/>"
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Textual AI explanation (no numbers; weather-agnostic)
+# Textual AI explanation (no numbers)
 # ──────────────────────────────────────────────────────────────────────────────
 def expectation_text(activity: str) -> str:
     stats = st.session_state["model"]["overall"].get(activity, {"n": 0, "value": 0.0})
@@ -337,7 +344,7 @@ def expectation_text(activity: str) -> str:
     mean_reward = stats.get("value", 0.0)
 
     if n == 0:
-        return "I don’t know the expected decrease in stress yet — let’s try this and learn what works for you."
+        return "I don’t know yet — let’s try this and learn what works for you."
 
     if mean_reward < 1.0:
         phrase = "a subtle easing of stress"
@@ -408,15 +415,13 @@ def page_initial():
     st.markdown("</div>", unsafe_allow_html=True)
 
 def page_home():
-    # Context (weather header only)
+    # Header info (weather) + demo stress sparkline
     st.session_state["weather"] = fetch_weather()
     ensure_series_for_demo_day()
     series = st.session_state.get("fitbit_series_today") or []
     peaks = st.session_state.get("fitbit_peaks_today", 0)
-    high_stress = peaks > 4
-    st.session_state["pre_stress"] = 7 if high_stress else 4
+    high_stress = peaks > 4  # peaks ONLY decide whether we propose a break now
 
-    # Header
     day_label = now_local().strftime("%a %d %b")
     precip = f"{st.session_state['weather']['precip']:.1f}"
     wind = f"{st.session_state['weather']['wind']:.1f}"
@@ -433,7 +438,6 @@ def page_home():
     </div>
     """, unsafe_allow_html=True)
 
-    # Stress overview (centered, boxed, labeled)
     svg = series_to_svg(series)
     st.markdown("""
     <div class="wrapper">
@@ -478,8 +482,8 @@ def page_home():
     if go:
         favs = st.session_state["favorite_activities"]
         if favs:
-            act, score_map = bandit_choose(favs, st.session_state["epsilon"], st.session_state["tau"])
-            st.session_state["last_recommendation"] = {"activity": act, "pre_stress": st.session_state["pre_stress"]}
+            act, _ = bandit_choose(favs, st.session_state["epsilon"], st.session_state["tau"])
+            st.session_state["last_recommendation"] = {"activity": act}
             st.session_state["page"] = "rec"; st.rerun()
         else:
             st.info("No favorites saved yet. Go back to add some.")
@@ -523,10 +527,9 @@ def page_rec():
     if diff:
         favs = st.session_state.get("favorite_activities", [])
         if favs:
-            # Force a new sample (slightly bias to exploration by jittering epsilon)
             alt_eps = min(0.5, st.session_state["epsilon"] + 0.2)
             new_act, _ = bandit_choose(favs, epsilon=alt_eps, tau=st.session_state["tau"])
-            st.session_state["last_recommendation"] = {"activity": new_act, "pre_stress": st.session_state["pre_stress"]}
+            st.session_state["last_recommendation"] = {"activity": new_act}
         st.rerun()
     if accept:
         st.session_state["page"] = "accept"; st.rerun()
@@ -591,7 +594,6 @@ def page_accept():
 def page_after():
     rec = st.session_state.get("last_recommendation")
     activity = rec["activity"] if rec else "(activity)"
-    pre_stress = rec["pre_stress"] if rec else 5
 
     st.markdown(f"""
     <div class="wrapper">
@@ -610,8 +612,7 @@ def page_after():
 
     next_day_btn = st.button("Next day ▶", use_container_width=True)
     if next_day_btn:
-        reward = max(0, pre_stress - stress_after)
-        bandit_update(activity, reward, more_often)
+        bandit_update(activity, stress_after, exp_rating, more_often)
         st.session_state["last_recommendation"] = None
         st.session_state["demo_day_offset"] += 1
         st.session_state["fitbit_series_today_key"] = None
