@@ -7,7 +7,7 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
-APP_VERSION = "v0.9.1-demo"
+APP_VERSION = "v0.9.2-demo"
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
@@ -80,6 +80,29 @@ body {
   font-size: 1rem;
 }
 
+/* Toggle pill buttons for favorites */
+.pill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+.pill {
+  border-radius: 999px;
+  padding: 8px 14px;
+  border: 1px solid #f7c2d6;
+  background: #ffeaf2;
+  font-weight: 600;
+  color: #6d2f4a;
+  cursor: pointer;
+}
+.pill.on {
+  background: linear-gradient(90deg, var(--pink-acc), var(--pink-acc-2));
+  color: #fff;
+  border-color: transparent;
+}
+
 /* Buttons */
 .stButton>button[kind="primary"], .stButton>button {
   border-radius: 999px !important;
@@ -126,25 +149,6 @@ body {
   border-radius: 999px;
   margin-bottom: 8px;
   display: inline-block;
-}
-
-/* Favorite pills */
-.fav-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.fav-pill {
-  background: #ffeaf2;
-  color: #6d2f4a;
-  border: 1px solid #f7c2d6;
-  padding: 7px 12px;
-  border-radius: 999px;
-  font-size: 0.9rem;
-  font-weight: 600;
 }
 
 /* Key-value display (cleaner spacing) */
@@ -195,6 +199,7 @@ def ss_init():
         "Power nap", "Quick tidy-up", "Listen to calm track"
     ])
     ss.setdefault("favorite_activities", [])
+    ss.setdefault("selected_map", {})  # per-activity toggle on initial page
     ss.setdefault("custom_activities", [])
     ss.setdefault("model", {"overall": {}})
     ss.setdefault("last_recommendation", None)
@@ -210,13 +215,13 @@ def ss_init():
     ss.setdefault("fitbit_peaks_today", 0)
     ss.setdefault("fitbit_series_today_key", None)
     for a in ss["all_activities"]:
-        ss["model"]["overall"].setdefault(a, {"n": 0, "value": 0.0, "pref": 0.0})
+        ss["model"]["overall"].setdefault(a, {"n": 0, "value": 0.0})
 
 ss_init()
 inject_css()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utility functions (weather + ics parsing)
+# Utilities (weather, calendar, svg)
 # ──────────────────────────────────────────────────────────────────────────────
 def now_local() -> datetime:
     return datetime.now() + timedelta(days=st.session_state.get("demo_day_offset", 0))
@@ -236,6 +241,120 @@ def fetch_weather():
         return {"precip": float(precip[idx]), "wind": float(wind[idx])}
     except Exception:
         return {"precip": 0.0, "wind": 3.0}
+
+def _to_local(dt_aware_or_naive: datetime) -> datetime:
+    if dt_aware_or_naive.tzinfo is None: return dt_aware_or_naive
+    return datetime.fromtimestamp(dt_aware_or_naive.timestamp())
+
+def _parse_ics_dt(val: str):
+    s = val.strip()
+    if len(s) == 8 and s.isdigit():
+        day = datetime.strptime(s, "%Y%m%d")
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        return ("allday", start, end)
+    if s.endswith("Z"):
+        dt = datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return _to_local(dt)
+    try:
+        return datetime.strptime(s, "%Y%m%dT%H%M%S")
+    except Exception:
+        return None
+
+def _unfold_ics_lines(text: str):
+    out = []
+    for line in text.splitlines():
+        if line.startswith(" "):
+            if out: out[-1] += line[1:]
+        else:
+            out.append(line)
+    return out
+
+def parse_ics(text: str):
+    evs = []; lines = _unfold_ics_lines(text); in_ev = False
+    dtstart_raw = dtend_raw = None; transp = busystatus = None
+    for ln in lines:
+        if ln.startswith("BEGIN:VEVENT"):
+            in_ev=True; dtstart_raw=dtend_raw=None; transp=busystatus=None; continue
+        if ln.startswith("END:VEVENT"):
+            if in_ev and dtstart_raw:
+                start=end=None; st_parsed=_parse_ics_dt(dtstart_raw)
+                if isinstance(st_parsed, tuple) and st_parsed[0]=="allday":
+                    start, end = st_parsed[1], st_parsed[2]
+                else:
+                    start = st_parsed
+                if dtend_raw:
+                    en_parsed = _parse_ics_dt(dtend_raw)
+                    end = en_parsed[1] if (isinstance(en_parsed, tuple) and en_parsed[0]=="allday") else en_parsed
+                if start and not end: end = start + timedelta(hours=1)
+                tr = (transp or "").strip().upper(); bs = (busystatus or "").strip().upper()
+                busy = not (tr=="TRANSPARENT" or bs=="FREE")
+                if start and end and end > start: evs.append({"start":start,"end":end,"busy":busy})
+            in_ev=False; continue
+        if not in_ev: continue
+        if ln.startswith("DTSTART"): dtstart_raw = ln.split(":",1)[-1]
+        elif ln.startswith("DTEND"): dtend_raw = ln.split(":",1)[-1]
+        elif ln.startswith("TRANSP"): transp = ln.split(":",1)[-1]
+        elif "BUSYSTATUS" in ln:     busystatus = ln.split(":",1)[-1]
+    return evs
+
+def fetch_and_cache_calendar(url: str):
+    if not url.strip():
+        st.session_state["calendar_last_status"] = "No calendar URL set."
+        st.session_state["calendar_events"] = []; return
+    try:
+        r = requests.get(url, timeout=10); r.raise_for_status()
+        events = parse_ics(r.text)
+        now_real = datetime.now(); horizon = now_real + timedelta(days=30)
+        busy = []
+        for ev in events:
+            if not ev.get("busy", True): continue
+            s, e = ev["start"], ev["end"]
+            if e < now_real or s > horizon: continue
+            busy.append((s, e))
+        busy.sort(key=lambda x: x[0])
+        st.session_state["calendar_events"] = busy
+        st.session_state["calendar_last_status"] = f"Loaded {len(busy)} busy events."
+    except Exception as ex:
+        st.session_state["calendar_events"] = []
+        st.session_state["calendar_last_status"] = f"Failed to load calendar: {ex}"
+
+def overlaps_busy(start_dt: datetime, end_dt: datetime) -> bool:
+    for s, e in st.session_state.get("calendar_events", []):
+        if start_dt < e and end_dt > s: return True
+    return False
+
+def list_available_slots(day_dt: datetime, duration_min: int):
+    """Whole/half-hour slots, 08:00–22:00.
+       For real today: hide past slots. Future/past demo days: show all."""
+    day = day_dt.date()
+    earliest = datetime.combine(day, datetime.min.time()).replace(hour=8)
+    latest   = datetime.combine(day, datetime.min.time()).replace(hour=22)
+    step = timedelta(minutes=30); dur = timedelta(minutes=duration_min)
+    real_today = datetime.now().date()
+    cutoff = earliest if day != real_today else datetime.now()
+    slots = []; cur = earliest
+    while cur + dur <= latest:
+        if cur >= cutoff and not overlaps_busy(cur, cur + dur):
+            slots.append(cur)
+        if day != real_today and not overlaps_busy(cur, cur + dur):
+            if cur not in slots: slots.append(cur)  # ensure future/past demo days keep earlier times too
+        cur += step
+    # de-dup and sort
+    slots = sorted(set(slots))
+    return slots
+
+def make_ics(summary, start_dt, duration_min, description=""):
+    end_dt = start_dt + timedelta(minutes=duration_min)
+    fmt = lambda dt: dt.strftime("%Y%m%dT%H%M%S")
+    uid = f"{int(time.time())}-{abs(hash(summary))}@stress-aware"
+    desc = description.replace("\n", " ")
+    ics = [
+        "BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//StressAware//BreakScheduler//EN","BEGIN:VEVENT",
+        f"UID:{uid}", f"DTSTAMP:{fmt(now_local())}", f"DTSTART:{fmt(start_dt)}", f"DTEND:{fmt(end_dt)}",
+        f"SUMMARY:{summary}", f"DESCRIPTION:{desc}", "END:VEVENT","END:VCALENDAR"
+    ]
+    return "\n".join(ics).encode("utf-8")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Bandit model (ε-greedy + softmax) using delta stress feedback
@@ -257,7 +376,7 @@ def bandit_choose(favorites, epsilon=0.05, tau=0.8):
 
 def bandit_update(activity, delta_stress, exp_rating):
     stats = st.session_state["model"]["overall"].setdefault(activity, {"n":0,"value":0.0})
-    reward = float(delta_stress) + 0.2*(float(exp_rating)-5.0)
+    reward = float(delta_stress) + 0.2*(float(exp_rating)-5.0)  # −6..+6ish
     n = stats["n"]+1
     stats["value"] += (reward - stats["value"]) / n
     stats["n"] = n
@@ -268,10 +387,16 @@ def bandit_update(activity, delta_stress, exp_rating):
 def generate_demo_series(target_peaks, length=48):
     base = randint(38,55)
     series = [base + 5*math.sin(i/5.5)+randint(-3,3) for i in range(length)]
-    for _ in range(target_peaks): 
-        k = randint(3,length-4)
+    # add peaks
+    centers=[]
+    attempts=0
+    while len(centers)<target_peaks and attempts<200:
+        k=randint(3,length-4)
+        if all(abs(k-c)>=4 for c in centers): centers.append(k)
+        attempts+=1
+    for c in centers:
         for j in range(-2,3):
-            idx = max(0,min(length-1,k+j))
+            idx=max(0,min(length-1,c+j))
             series[idx]+=randint(10,25)*(1-abs(j)/3)
     return series
 
@@ -289,10 +414,11 @@ def series_svg(series):
     def sx(i): return pad+(w-2*pad)*(i/max(1,n-1))
     def sy(v): return pad+(h-2*pad)*(1-(v-mn)/rng)
     pts=" ".join([f"{sx(i):.1f},{sy(v):.1f}" for i,v in enumerate(series)])
-    svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg'>"
-    svg+="<polyline points='"+pts+"' fill='none' stroke='url(#grad)' stroke-width='2'/>"
+    svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none'>"
     svg+="<defs><linearGradient id='grad' x1='0' x2='1'><stop offset='0%' stop-color='#ff6aa9'/>"
-    svg+="<stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs></svg>"
+    svg+="<stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs>"
+    svg+=f"<polyline points='{pts}' fill='none' stroke='url(#grad)' stroke-width='2'/>"
+    svg+="</svg>"
     return svg
 
 def svg_tag(svg): 
@@ -314,6 +440,33 @@ def expectation_text(activity):
     return "Often provides a strong reduction in stress."
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Favorites toggle helper
+# ──────────────────────────────────────────────────────────────────────────────
+def toggle_pill(label: str):
+    key = f"sel_{label}"
+    if key not in st.session_state["selected_map"]:
+        st.session_state["selected_map"][key] = False
+    on = st.session_state["selected_map"][key]
+    # Render as HTML button-like pill that triggers a Streamlit button to toggle
+    cols = st.columns(1)
+    with cols[0]:
+        btn = st.button(label, key=f"btn_{label}")
+        st.markdown(
+            f"<style>#btn_{label}{{display:none}}</style>"
+            f"<div class='pill {'on' if on else ''}'>{label}</div>",
+            unsafe_allow_html=True
+        )
+        if btn:
+            st.session_state["selected_map"][key] = not on
+
+def get_selected_favorites():
+    sel = []
+    for a in st.session_state["all_activities"]:
+        if st.session_state["selected_map"].get(f"sel_{a}", False):
+            sel.append(a)
+    return sel
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Pages
 # ──────────────────────────────────────────────────────────────────────────────
 def page_initial():
@@ -322,19 +475,64 @@ def page_initial():
       <div class='card'>
         <div class='badge'>Step 1</div>
         <div class='h1'>Let’s create your personal advice!</div>
-        <p class='p'>Pick at least three activities you enjoy. You can add your own too.</p>
+        <p class='p'>Tap to select at least three favorite activities. You can add your own too.</p>
       </div>
     </div>
     """,unsafe_allow_html=True)
+
+    # Favorites as toggle pills (buttons)
+    st.markdown("<div class='wrapper'><div class='pill-grid'>", unsafe_allow_html=True)
     for a in st.session_state["all_activities"]:
-        col1,col2=st.columns([0.15,0.85])
-        with col1: st.checkbox("",key=f"chk_{a}")
-        with col2: st.markdown(f"<div class='p'>{a}</div>",unsafe_allow_html=True)
-    if st.button("Next →",use_container_width=True,type="primary"):
-        sel=[a for a in st.session_state["all_activities"] if st.session_state.get(f"chk_{a}",False)]
-        if len(sel)<3: st.warning("Pick at least three."); return
-        st.session_state["favorite_activities"]=sel
-        st.session_state["page"]="home"; st.rerun()
+        # Each pill has an invisible button + styled div; clicking the button toggles state
+        clicked = st.button(a, key=f"toggle_{a}")
+        on = st.session_state["selected_map"].get(f"sel_{a}", False)
+        if clicked:
+            st.session_state["selected_map"][f"sel_{a}"] = not on
+            on = not on
+        st.markdown(f"<div class='pill {'on' if on else ''}'>{a}</div>", unsafe_allow_html=True)
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # Add custom activity
+    st.markdown("<div class='wrapper'><div class='section'><div class='badge'>Add custom activity</div></div></div>", unsafe_allow_html=True)
+    c1, c2 = st.columns([0.7, 0.3])
+    with c1:
+        new_act = st.text_input(" ", placeholder="e.g., Journal for 5 min", label_visibility="collapsed", key="custom_add")
+    with c2:
+        if st.button("Add"):
+            if new_act.strip() and new_act not in st.session_state["all_activities"]:
+                na = new_act.strip()
+                st.session_state["all_activities"].append(na)
+                st.session_state["custom_activities"].append(na)
+                st.session_state["model"]["overall"].setdefault(na, {"n":0,"value":0.0})
+                st.session_state["selected_map"][f"sel_{na}"] = True
+                st.rerun()
+
+    # Calendar URL
+    st.markdown("<div class='wrapper'><div class='section'><div class='badge'>Calendar (.ics) URL</div></div></div>", unsafe_allow_html=True)
+    cal_url = st.text_input("Calendar (.ics) URL", value=st.session_state.get("calendar_url",""))
+    colc1, colc2 = st.columns(2)
+    with colc1:
+        if st.button("Save & Test", use_container_width=True):
+            st.session_state["calendar_url"] = cal_url.strip()
+            fetch_and_cache_calendar(st.session_state["calendar_url"])
+    with colc2:
+        if st.button("Clear", use_container_width=True):
+            st.session_state["calendar_url"] = ""
+            st.session_state["calendar_events"] = []
+            st.session_state["calendar_last_status"] = "Cleared."
+    if st.session_state.get("calendar_last_status"):
+        st.caption(st.session_state["calendar_last_status"])
+
+    # Next
+    st.markdown("<div class='wrapper'>", unsafe_allow_html=True)
+    if st.button("Next →", use_container_width=True, type="primary"):
+        selected = get_selected_favorites()
+        if len(selected) < 3:
+            st.warning("Please select at least three activities."); render_footer(); return
+        st.session_state["favorite_activities"] = selected
+        st.session_state["page"] = "home"
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
     render_footer()
 
 def page_home():
@@ -343,28 +541,44 @@ def page_home():
     series=st.session_state["fitbit_series_today"]
     peaks=st.session_state["fitbit_peaks_today"]
     high=peaks>4
+
+    # Header
     st.markdown(f"<div class='wrapper'><div class='hello'>Good Morning, friend</div>"
                 f"<div class='sub'>{now_local().strftime('%a %d %b')} · "
                 f"{st.session_state['weather']['precip']:.1f}mm · wind "
                 f"{st.session_state['weather']['wind']:.1f}m/s</div></div>",unsafe_allow_html=True)
+
+    # Stress graph
     st.markdown("<div class='wrapper'><div class='block'><div class='badge'>Stress Overview</div>"
                 "<div class='stress-visual-wrap'><div class='stress-visual'><div class='viz-label'>Demo stress (Fitbit-like)</div>"
                 f"{svg_tag(series_svg(series))}</div></div>"
                 f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div></div></div>",unsafe_allow_html=True)
-    msg="High stress detected — a break is recommended" if high else "No excess stress — you can still schedule a break"
+
+    # Action area
+    msg="High stress detected — a break is recommended" if high else "No excess stress — you can schedule a break"
     st.markdown(f"<div class='wrapper'><div class='badge'>{msg}</div></div>",unsafe_allow_html=True)
-    col1,col2=st.columns(2)
-    if col1.button("Suggest break",use_container_width=True):
+
+    c1, c2, c3 = st.columns(3)
+    go = c1.button("Suggest break", use_container_width=True)
+    nxt = c2.button("Next day ▶", use_container_width=True)
+    ref = c3.button("Refresh calendar", use_container_width=True)
+
+    if ref and st.session_state.get("calendar_url"):
+        fetch_and_cache_calendar(st.session_state["calendar_url"]); st.rerun()
+    if nxt:
+        st.session_state["demo_day_offset"] += 1
+        st.session_state["fitbit_series_today_key"] = None
+        st.session_state["last_recommendation"] = None
+        st.rerun()
+
+    if go:
         favs=st.session_state["favorite_activities"]
         if favs:
-            act,_=bandit_choose(favs)
+            act,_=bandit_choose(favs, st.session_state["epsilon"], st.session_state["tau"])
             st.session_state["last_recommendation"]={"activity":act}
             st.session_state["page"]="rec"; st.rerun()
-    if col2.button("Next day ▶",use_container_width=True):
-        st.session_state["demo_day_offset"]+=1
-        st.session_state["fitbit_series_today_key"]=None
-        st.session_state["last_recommendation"]=None
-        st.rerun()
+        else:
+            st.info("No favorites saved yet. Go back to add some.")
     render_footer()
 
 def page_rec():
@@ -374,30 +588,82 @@ def page_rec():
     st.markdown(f"<div class='wrapper'><div class='rec-card'><div class='rec-title'>Recommended break</div>"
                 f"<div class='kv'><span>Activity</span><span>{act}</span></div>"
                 f"<div class='explain'>{expectation_text(act)}</div></div></div>",unsafe_allow_html=True)
-    col1,col2=st.columns(2)
-    if col1.button("Accept",use_container_width=True):
-        st.session_state["page"]="accept"; st.rerun()
-    if col2.button("Back",use_container_width=True):
+    c1,c2,c3=st.columns(3)
+    back = c1.button("Back", use_container_width=True)
+    accept = c2.button("Accept", use_container_width=True)
+    diff = c3.button("Suggest different", use_container_width=True)
+
+    if back:
         st.session_state["page"]="home"; st.rerun()
+    if diff:
+        favs = st.session_state.get("favorite_activities", [])
+        if favs:
+            alt_eps = min(0.5, st.session_state["epsilon"] + 0.2)
+            new_act,_ = bandit_choose(favs, epsilon=alt_eps, tau=st.session_state["tau"])
+            st.session_state["last_recommendation"]={"activity":new_act}
+        st.rerun()
+    if accept:
+        st.session_state["page"]="accept"; st.rerun()
     render_footer()
 
 def page_accept():
-    rec=st.session_state["last_recommendation"]; act=rec["activity"]
+    rec=st.session_state.get("last_recommendation")
+    if not rec: st.session_state["page"]="home"; st.rerun(); return
+    act=rec["activity"]
+
+    # Duration first
     dur=st.slider("Duration (minutes)",15,60,st.session_state["accept_duration"],step=5)
     st.session_state["accept_duration"]=dur
-    start=now_local().replace(hour=randint(8,20),minute=0)
+
+    # Whole/half-hour starting times with calendar blocking (08:00–22:00)
+    slots = list_available_slots(now_local(), dur)
+    if slots:
+        labels = [s.strftime("%H:%M") for s in slots]
+        idx = 0
+        if st.session_state.get("accept_start_choice") in slots:
+            idx = slots.index(st.session_state["accept_start_choice"])
+        chosen_label = st.selectbox("Start time", options=labels, index=idx)
+        chosen_start = slots[labels.index(chosen_label)]
+        st.session_state["accept_start_choice"] = chosen_start
+    else:
+        chosen_start = None
+        st.info("No free whole/half-hour slots available today between 08:00–22:00 for that duration.")
+
     st.markdown(f"<div class='wrapper'><div class='rec-card'><div class='rec-title'>Start your break</div>"
                 f"<div class='kv'><span>Activity</span><span>{act}</span></div>"
-                f"<div class='kv'><span>Start</span><span>{start.strftime('%H:%M')}</span></div>"
+                f"<div class='kv'><span>Start</span><span>{chosen_start.strftime('%H:%M') if chosen_start else '—'}</span></div>"
                 f"<div class='kv'><span>Duration</span><span>{dur} min</span></div></div></div>",unsafe_allow_html=True)
-    if st.button("I did this break",use_container_width=True):
+
+    c1,c2,c3 = st.columns(3)
+    did = c1.button("I did this break", use_container_width=True, disabled=(chosen_start is None))
+    # ICS download
+    if chosen_start:
+        ics = make_ics(
+            summary=f"Break: {act}",
+            start_dt=chosen_start,
+            duration_min=dur,
+            description=f"Suggested by Stress-Aware Scheduler."
+        )
+        c2.download_button("Plan (.ics)", data=ics, file_name=f"break_{act.replace(' ','_')}.ics",
+                           mime="text/calendar", use_container_width=True)
+    else:
+        c2.write("")
+    back = c3.button("Back", use_container_width=True)
+
+    rec["start"] = chosen_start; rec["duration"] = dur
+
+    if back:
+        st.session_state["page"]="rec"; st.rerun()
+    if did and chosen_start:
         st.session_state["page"]="after"; st.rerun()
     render_footer()
 
 def page_after():
-    rec=st.session_state["last_recommendation"]; act=rec["activity"]
+    rec=st.session_state.get("last_recommendation")
+    act = rec["activity"] if rec else "(activity)"
     st.markdown(f"<div class='wrapper'><div class='card'><div class='badge'>Feedback</div>"
-                f"<div class='h1'>How did it go?</div><p class='p'>Tell me how the break changed your stress.</p>"
+                f"<div class='h1'>How did it go?</div>"
+                f"<p class='p'>Tell me how the break changed your stress.</p>"
                 f"<div class='p'>Activity: <b>{act}</b></div></div></div>",unsafe_allow_html=True)
     delta=st.slider("Stress change (−5 much worse → +5 much better)",-5,5,1)
     exp=st.slider("Experience rating (1–10)",1,10,7)
