@@ -7,12 +7,12 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
-APP_VERSION = "v0.9.2-demo"
+APP_VERSION = "v0.9.3-demo"
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CSS (pastel overlay + improved spacing + responsive text + centered graph)
+# CSS — small pill buttons + full-width action buttons, centered layout
 # ──────────────────────────────────────────────────────────────────────────────
 def read_css_file(name: str) -> str:
     try:
@@ -30,30 +30,25 @@ PASTEL_OVERLAY = """
   --ink-2: #432838;
 }
 
-/* General layout */
 body {
   background: var(--pink-bg) !important;
   font-family: 'Inter', system-ui, sans-serif;
   color: var(--ink);
 }
 
+/* Center the app to a narrow mobile layout */
 .wrapper {
   max-width: 340px;
   margin: 0 auto;
   padding: 0 10px;
 }
 
-/* Cards and spacing rhythm */
 .card, .block, .rec-card {
   background: #ffffffcc !important;
   box-shadow: 0 8px 30px rgba(255, 106, 169, 0.15) !important;
   border-radius: 18px !important;
   padding: 22px 18px !important;
   margin-top: 28px !important;
-}
-
-.section {
-  margin-top: 26px !important;
 }
 
 .badge {
@@ -80,47 +75,36 @@ body {
   font-size: 1rem;
 }
 
-/* Toggle pill buttons for favorites */
-.pill-grid {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 10px;
-}
-.pill {
-  border-radius: 999px;
-  padding: 8px 14px;
-  border: 1px solid #f7c2d6;
-  background: #ffeaf2;
-  font-weight: 600;
-  color: #6d2f4a;
-  cursor: pointer;
-}
-.pill.on {
-  background: linear-gradient(90deg, var(--pink-acc), var(--pink-acc-2));
-  color: #fff;
-  border-color: transparent;
-}
-
-/* Buttons */
-.stButton>button[kind="primary"], .stButton>button {
+/* Default BUTTONS -> pill-sized, inline (for favorites) */
+.stButton>button {
+  display: inline-block !important;
+  width: auto !important;
   border-radius: 999px !important;
-  border: 0 !important;
-  padding: 12px 16px !important;
+  border: 1px solid #f7c2d6 !important;
+  padding: 6px 10px !important;
+  margin: 6px !important;
+  font-size: 0.9rem !important;
+  font-weight: 600 !important;
+  background: #ffeaf2 !important;
+  color: #6d2f4a !important;
+}
+
+/* Selected pill uses "primary" style (we set type='primary' in code) */
+.stButton>button[kind="primary"] {
   background: linear-gradient(90deg, var(--pink-acc), var(--pink-acc-2)) !important;
-  color: white !important;
-  font-weight: 700 !important;
+  color: #fff !important;
+  border-color: transparent !important;
+}
+
+/* ACTION sections override to full-width, larger padding */
+.actions .stButton>button {
+  width: 100% !important;
+  padding: 12px 16px !important;
   margin: 10px 0 22px 0 !important;
-  width: 100%;
-  font-size: 1rem;
+  font-size: 1rem !important;
 }
 
-.stButton>button:hover {
-  filter: brightness(0.98);
-}
-
-/* Stress graph area (centered and responsive) */
+/* Stress graph centered */
 .stress-visual-wrap {
   display: flex;
   justify-content: center;
@@ -128,7 +112,6 @@ body {
   margin-top: 18px;
   width: 100%;
 }
-
 .stress-visual {
   max-width: 320px;
   width: 100%;
@@ -139,7 +122,6 @@ body {
   box-sizing: border-box;
   text-align: center;
 }
-
 .viz-label {
   font-size: 0.8rem;
   color: #7f5b69;
@@ -151,7 +133,7 @@ body {
   display: inline-block;
 }
 
-/* Key-value display (cleaner spacing) */
+/* KV rows */
 .kv {
   display: flex;
   justify-content: space-between;
@@ -159,15 +141,8 @@ body {
   gap: 12px;
   margin: 8px 0;
 }
-
-.kv span:first-child {
-  color: #7f5b69;
-}
-
-.kv span:last-child {
-  font-weight: 600;
-  color: #492635;
-}
+.kv span:first-child { color: #7f5b69; }
+.kv span:last-child { font-weight: 600; color: #492635; }
 
 /* Footer */
 .footer {
@@ -189,7 +164,7 @@ def render_footer():
     st.markdown(f"<div class='footer'>{APP_VERSION}</div>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Initialize session state
+# State
 # ──────────────────────────────────────────────────────────────────────────────
 def ss_init():
     ss = st.session_state
@@ -199,7 +174,7 @@ def ss_init():
         "Power nap", "Quick tidy-up", "Listen to calm track"
     ])
     ss.setdefault("favorite_activities", [])
-    ss.setdefault("selected_map", {})  # per-activity toggle on initial page
+    ss.setdefault("selected_map", {})  # {activity: bool}
     ss.setdefault("custom_activities", [])
     ss.setdefault("model", {"overall": {}})
     ss.setdefault("last_recommendation", None)
@@ -216,12 +191,13 @@ def ss_init():
     ss.setdefault("fitbit_series_today_key", None)
     for a in ss["all_activities"]:
         ss["model"]["overall"].setdefault(a, {"n": 0, "value": 0.0})
+        ss["selected_map"].setdefault(a, False)
 
 ss_init()
 inject_css()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utilities (weather, calendar, svg)
+# Utils: weather, calendar, SVG
 # ──────────────────────────────────────────────────────────────────────────────
 def now_local() -> datetime:
     return datetime.now() + timedelta(days=st.session_state.get("demo_day_offset", 0))
@@ -325,8 +301,6 @@ def overlaps_busy(start_dt: datetime, end_dt: datetime) -> bool:
     return False
 
 def list_available_slots(day_dt: datetime, duration_min: int):
-    """Whole/half-hour slots, 08:00–22:00.
-       For real today: hide past slots. Future/past demo days: show all."""
     day = day_dt.date()
     earliest = datetime.combine(day, datetime.min.time()).replace(hour=8)
     latest   = datetime.combine(day, datetime.min.time()).replace(hour=22)
@@ -335,13 +309,12 @@ def list_available_slots(day_dt: datetime, duration_min: int):
     cutoff = earliest if day != real_today else datetime.now()
     slots = []; cur = earliest
     while cur + dur <= latest:
-        if cur >= cutoff and not overlaps_busy(cur, cur + dur):
-            slots.append(cur)
-        if day != real_today and not overlaps_busy(cur, cur + dur):
-            if cur not in slots: slots.append(cur)  # ensure future/past demo days keep earlier times too
+        ok = not overlaps_busy(cur, cur + dur)
+        if day != real_today:
+            if ok: slots.append(cur)
+        else:
+            if cur >= cutoff and ok: slots.append(cur)
         cur += step
-    # de-dup and sort
-    slots = sorted(set(slots))
     return slots
 
 def make_ics(summary, start_dt, duration_min, description=""):
@@ -356,30 +329,22 @@ def make_ics(summary, start_dt, duration_min, description=""):
     ]
     return "\n".join(ics).encode("utf-8")
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Bandit model (ε-greedy + softmax) using delta stress feedback
-# ──────────────────────────────────────────────────────────────────────────────
-def bandit_choose(favorites, epsilon=0.05, tau=0.8):
-    model = st.session_state["model"]["overall"]
-    scores = [(a, model.get(a, {"value":0})["value"]) for a in favorites]
-    if not scores: return None, {}
-    if random() < epsilon:
-        return scores[randint(0, len(scores)-1)][0], dict(scores)
-    m = max(s for _, s in scores)
-    exps = [(a, math.exp((s-m)/max(1e-6,tau))) for a,s in scores]
-    total = sum(v for _,v in exps)
-    r = random(); cum = 0
-    for a,v in exps:
-        cum += v/total
-        if r <= cum: return a, dict(scores)
-    return exps[-1][0], dict(scores)
+def series_svg(series):
+    n=len(series); w,h=288,120; pad=8
+    mn,mx=min(series),max(series); rng=max(1,mx-mn)
+    def sx(i): return pad+(w-2*pad)*(i/max(1,n-1))
+    def sy(v): return pad+(h-2*pad)*(1-(v-mn)/rng)
+    pts=" ".join([f"{sx(i):.1f},{sy(v):.1f}" for i,v in enumerate(series)])
+    svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none'>"
+    svg+="<defs><linearGradient id='grad' x1='0' x2='1'><stop offset='0%' stop-color='#ff6aa9'/>"
+    svg+="<stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs>"
+    svg+=f"<polyline points='{pts}' fill='none' stroke='url(#grad)' stroke-width='2'/>"
+    svg+="</svg>"
+    return svg
 
-def bandit_update(activity, delta_stress, exp_rating):
-    stats = st.session_state["model"]["overall"].setdefault(activity, {"n":0,"value":0.0})
-    reward = float(delta_stress) + 0.2*(float(exp_rating)-5.0)  # −6..+6ish
-    n = stats["n"]+1
-    stats["value"] += (reward - stats["value"]) / n
-    stats["n"] = n
+def svg_tag(svg): 
+    enc=urllib.parse.quote(svg)
+    return f"<img src='data:image/svg+xml;utf8,{enc}' width='288' height='120'/>"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Demo stress data
@@ -387,7 +352,6 @@ def bandit_update(activity, delta_stress, exp_rating):
 def generate_demo_series(target_peaks, length=48):
     base = randint(38,55)
     series = [base + 5*math.sin(i/5.5)+randint(-3,3) for i in range(length)]
-    # add peaks
     centers=[]
     attempts=0
     while len(centers)<target_peaks and attempts<200:
@@ -408,26 +372,31 @@ def ensure_series_for_demo_day():
     st.session_state["fitbit_peaks_today"]=peaks_today
     st.session_state["fitbit_series_today_key"]=key
 
-def series_svg(series):
-    n=len(series); w,h=288,120; pad=8
-    mn,mx=min(series),max(series); rng=max(1,mx-mn)
-    def sx(i): return pad+(w-2*pad)*(i/max(1,n-1))
-    def sy(v): return pad+(h-2*pad)*(1-(v-mn)/rng)
-    pts=" ".join([f"{sx(i):.1f},{sy(v):.1f}" for i,v in enumerate(series)])
-    svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none'>"
-    svg+="<defs><linearGradient id='grad' x1='0' x2='1'><stop offset='0%' stop-color='#ff6aa9'/>"
-    svg+="<stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs>"
-    svg+=f"<polyline points='{pts}' fill='none' stroke='url(#grad)' stroke-width='2'/>"
-    svg+="</svg>"
-    return svg
-
-def svg_tag(svg): 
-    enc=urllib.parse.quote(svg)
-    return f"<img src='data:image/svg+xml;utf8,{enc}' width='288' height='120'/>"
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Textual expectation based on mean value
+# Bandit model — delta stress + small experience nudge
 # ──────────────────────────────────────────────────────────────────────────────
+def bandit_choose(favorites, epsilon=0.05, tau=0.8):
+    model = st.session_state["model"]["overall"]
+    scores = [(a, model.get(a, {"value":0})["value"]) for a in favorites]
+    if not scores: return None, {}
+    if random() < epsilon:
+        return scores[randint(0, len(scores)-1)][0], dict(scores)
+    m = max(s for _, s in scores)
+    exps = [(a, math.exp((s-m)/max(1e-6,tau))) for a,s in scores]
+    total = sum(v for _,v in exps)
+    r = random(); cum = 0
+    for a,v in exps:
+        cum += v/total
+        if r <= cum: return a, dict(scores)
+    return exps[-1][0], dict(scores)
+
+def bandit_update(activity, delta_stress, exp_rating):
+    stats = st.session_state["model"]["overall"].setdefault(activity, {"n":0,"value":0.0})
+    reward = float(delta_stress) + 0.2*(float(exp_rating)-5.0)  # may be negative
+    n = stats["n"]+1
+    stats["value"] += (reward - stats["value"]) / n
+    stats["n"] = n
+
 def expectation_text(activity):
     s=st.session_state["model"]["overall"].get(activity,{"n":0,"value":0})
     n=s["n"]; m=s["value"]
@@ -440,31 +409,23 @@ def expectation_text(activity):
     return "Often provides a strong reduction in stress."
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Favorites toggle helper
+# Favorite pills renderer (small, pressable, multiple per row & centered)
 # ──────────────────────────────────────────────────────────────────────────────
-def toggle_pill(label: str):
-    key = f"sel_{label}"
-    if key not in st.session_state["selected_map"]:
-        st.session_state["selected_map"][key] = False
-    on = st.session_state["selected_map"][key]
-    # Render as HTML button-like pill that triggers a Streamlit button to toggle
-    cols = st.columns(1)
-    with cols[0]:
-        btn = st.button(label, key=f"btn_{label}")
-        st.markdown(
-            f"<style>#btn_{label}{{display:none}}</style>"
-            f"<div class='pill {'on' if on else ''}'>{label}</div>",
-            unsafe_allow_html=True
-        )
-        if btn:
-            st.session_state["selected_map"][key] = not on
+def render_fav_pills(options, per_row=3):
+    """Render activities as small pill buttons. Selected -> primary, unselected -> secondary."""
+    if not options: return
+    # Make rows
+    for i in range(0, len(options), per_row):
+        row = options[i:i+per_row]
+        cols = st.columns(len(row), gap="small")
+        for c, a in zip(cols, row):
+            with c:
+                selected = st.session_state["selected_map"].get(a, False)
+                if st.button(a, key=f"pill_{a}", type=("primary" if selected else "secondary")):
+                    st.session_state["selected_map"][a] = not selected
 
 def get_selected_favorites():
-    sel = []
-    for a in st.session_state["all_activities"]:
-        if st.session_state["selected_map"].get(f"sel_{a}", False):
-            sel.append(a)
-    return sel
+    return [a for a, on in st.session_state["selected_map"].items() if on and a in st.session_state["all_activities"]]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pages
@@ -478,37 +439,29 @@ def page_initial():
         <p class='p'>Tap to select at least three favorite activities. You can add your own too.</p>
       </div>
     </div>
-    """,unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-    # Favorites as toggle pills (buttons)
-    st.markdown("<div class='wrapper'><div class='pill-grid'>", unsafe_allow_html=True)
-    for a in st.session_state["all_activities"]:
-        # Each pill has an invisible button + styled div; clicking the button toggles state
-        clicked = st.button(a, key=f"toggle_{a}")
-        on = st.session_state["selected_map"].get(f"sel_{a}", False)
-        if clicked:
-            st.session_state["selected_map"][f"sel_{a}"] = not on
-            on = not on
-        st.markdown(f"<div class='pill {'on' if on else ''}'>{a}</div>", unsafe_allow_html=True)
-    st.markdown("</div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='wrapper'>", unsafe_allow_html=True)
+    render_fav_pills(st.session_state["all_activities"], per_row=3)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # Add custom activity
-    st.markdown("<div class='wrapper'><div class='section'><div class='badge'>Add custom activity</div></div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='wrapper'><div class='card'><div class='badge'>Add custom activity</div>", unsafe_allow_html=True)
     c1, c2 = st.columns([0.7, 0.3])
     with c1:
         new_act = st.text_input(" ", placeholder="e.g., Journal for 5 min", label_visibility="collapsed", key="custom_add")
     with c2:
         if st.button("Add"):
-            if new_act.strip() and new_act not in st.session_state["all_activities"]:
+            if new_act and new_act.strip() and new_act.strip() not in st.session_state["all_activities"]:
                 na = new_act.strip()
                 st.session_state["all_activities"].append(na)
-                st.session_state["custom_activities"].append(na)
                 st.session_state["model"]["overall"].setdefault(na, {"n":0,"value":0.0})
-                st.session_state["selected_map"][f"sel_{na}"] = True
+                st.session_state["selected_map"][na] = True
                 st.rerun()
+    st.markdown("</div></div>", unsafe_allow_html=True)
 
     # Calendar URL
-    st.markdown("<div class='wrapper'><div class='section'><div class='badge'>Calendar (.ics) URL</div></div></div>", unsafe_allow_html=True)
+    st.markdown("<div class='wrapper'><div class='card'><div class='badge'>Calendar (.ics) URL</div>", unsafe_allow_html=True)
     cal_url = st.text_input("Calendar (.ics) URL", value=st.session_state.get("calendar_url",""))
     colc1, colc2 = st.columns(2)
     with colc1:
@@ -522,46 +475,52 @@ def page_initial():
             st.session_state["calendar_last_status"] = "Cleared."
     if st.session_state.get("calendar_last_status"):
         st.caption(st.session_state["calendar_last_status"])
+    st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # Next
-    st.markdown("<div class='wrapper'>", unsafe_allow_html=True)
+    # Next (full-width)
+    st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
     if st.button("Next →", use_container_width=True, type="primary"):
         selected = get_selected_favorites()
         if len(selected) < 3:
-            st.warning("Please select at least three activities."); render_footer(); return
-        st.session_state["favorite_activities"] = selected
-        st.session_state["page"] = "home"
-        st.rerun()
+            st.warning("Please select at least three activities.")
+        else:
+            st.session_state["favorite_activities"] = selected
+            st.session_state["page"] = "home"
+            st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
     render_footer()
 
 def page_home():
-    st.session_state["weather"]=fetch_weather()
+    st.session_state["weather"] = fetch_weather()
     ensure_series_for_demo_day()
-    series=st.session_state["fitbit_series_today"]
-    peaks=st.session_state["fitbit_peaks_today"]
-    high=peaks>4
+    series = st.session_state["fitbit_series_today"]
+    peaks = st.session_state["fitbit_peaks_today"]
+    high = peaks > 4
 
     # Header
     st.markdown(f"<div class='wrapper'><div class='hello'>Good Morning, friend</div>"
                 f"<div class='sub'>{now_local().strftime('%a %d %b')} · "
                 f"{st.session_state['weather']['precip']:.1f}mm · wind "
-                f"{st.session_state['weather']['wind']:.1f}m/s</div></div>",unsafe_allow_html=True)
+                f"{st.session_state['weather']['wind']:.1f}m/s</div></div>", unsafe_allow_html=True)
 
-    # Stress graph
+    # Stress graph (centered)
     st.markdown("<div class='wrapper'><div class='block'><div class='badge'>Stress Overview</div>"
                 "<div class='stress-visual-wrap'><div class='stress-visual'><div class='viz-label'>Demo stress (Fitbit-like)</div>"
                 f"{svg_tag(series_svg(series))}</div></div>"
-                f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div></div></div>",unsafe_allow_html=True)
+                f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div></div></div>", unsafe_allow_html=True)
 
-    # Action area
-    msg="High stress detected — a break is recommended" if high else "No excess stress — you can schedule a break"
-    st.markdown(f"<div class='wrapper'><div class='badge'>{msg}</div></div>",unsafe_allow_html=True)
+    # Actions (full-width)
+    msg = "High stress detected — a break is recommended" if high else "No excess stress — you can schedule a break"
+    st.markdown(f"<div class='wrapper'><div class='badge'>{msg}</div></div>", unsafe_allow_html=True)
 
+    st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
-    go = c1.button("Suggest break", use_container_width=True)
-    nxt = c2.button("Next day ▶", use_container_width=True)
-    ref = c3.button("Refresh calendar", use_container_width=True)
+    with c1:
+        go = st.button("Suggest break", use_container_width=True)
+    with c2:
+        nxt = st.button("Next day ▶", use_container_width=True)
+    with c3:
+        ref = st.button("Refresh calendar", use_container_width=True)
 
     if ref and st.session_state.get("calendar_url"):
         fetch_and_cache_calendar(st.session_state["calendar_url"]); st.rerun()
@@ -572,26 +531,34 @@ def page_home():
         st.rerun()
 
     if go:
-        favs=st.session_state["favorite_activities"]
+        favs = st.session_state["favorite_activities"]
         if favs:
-            act,_=bandit_choose(favs, st.session_state["epsilon"], st.session_state["tau"])
-            st.session_state["last_recommendation"]={"activity":act}
-            st.session_state["page"]="rec"; st.rerun()
+            act, _ = bandit_choose(favs, st.session_state["epsilon"], st.session_state["tau"])
+            st.session_state["last_recommendation"] = {"activity": act}
+            st.session_state["page"] = "rec"; st.rerun()
         else:
             st.info("No favorites saved yet. Go back to add some.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
     render_footer()
 
 def page_rec():
-    rec=st.session_state.get("last_recommendation")
+    rec = st.session_state.get("last_recommendation")
     if not rec: st.session_state["page"]="home"; st.rerun(); return
-    act=rec["activity"]
+    act = rec["activity"]
+
     st.markdown(f"<div class='wrapper'><div class='rec-card'><div class='rec-title'>Recommended break</div>"
                 f"<div class='kv'><span>Activity</span><span>{act}</span></div>"
-                f"<div class='explain'>{expectation_text(act)}</div></div></div>",unsafe_allow_html=True)
-    c1,c2,c3=st.columns(3)
-    back = c1.button("Back", use_container_width=True)
-    accept = c2.button("Accept", use_container_width=True)
-    diff = c3.button("Suggest different", use_container_width=True)
+                f"<div class='explain'>{expectation_text(act)}</div></div></div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        back = st.button("Back", use_container_width=True)
+    with c2:
+        accept = st.button("Accept", use_container_width=True)
+    with c3:
+        diff = st.button("Suggest different", use_container_width=True)
 
     if back:
         st.session_state["page"]="home"; st.rerun()
@@ -599,23 +566,24 @@ def page_rec():
         favs = st.session_state.get("favorite_activities", [])
         if favs:
             alt_eps = min(0.5, st.session_state["epsilon"] + 0.2)
-            new_act,_ = bandit_choose(favs, epsilon=alt_eps, tau=st.session_state["tau"])
-            st.session_state["last_recommendation"]={"activity":new_act}
+            new_act, _ = bandit_choose(favs, epsilon=alt_eps, tau=st.session_state["tau"])
+            st.session_state["last_recommendation"] = {"activity": new_act}
         st.rerun()
     if accept:
         st.session_state["page"]="accept"; st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
     render_footer()
 
 def page_accept():
-    rec=st.session_state.get("last_recommendation")
+    rec = st.session_state.get("last_recommendation")
     if not rec: st.session_state["page"]="home"; st.rerun(); return
-    act=rec["activity"]
+    act = rec["activity"]
 
-    # Duration first
-    dur=st.slider("Duration (minutes)",15,60,st.session_state["accept_duration"],step=5)
-    st.session_state["accept_duration"]=dur
+    # Duration
+    dur = st.slider("Duration (minutes)", 15, 60, st.session_state["accept_duration"], step=5)
+    st.session_state["accept_duration"] = dur
 
-    # Whole/half-hour starting times with calendar blocking (08:00–22:00)
+    # Whole/half-hour start selection with busy checks
     slots = list_available_slots(now_local(), dur)
     if slots:
         labels = [s.strftime("%H:%M") for s in slots]
@@ -632,11 +600,12 @@ def page_accept():
     st.markdown(f"<div class='wrapper'><div class='rec-card'><div class='rec-title'>Start your break</div>"
                 f"<div class='kv'><span>Activity</span><span>{act}</span></div>"
                 f"<div class='kv'><span>Start</span><span>{chosen_start.strftime('%H:%M') if chosen_start else '—'}</span></div>"
-                f"<div class='kv'><span>Duration</span><span>{dur} min</span></div></div></div>",unsafe_allow_html=True)
+                f"<div class='kv'><span>Duration</span><span>{dur} min</span></div></div></div>", unsafe_allow_html=True)
 
-    c1,c2,c3 = st.columns(3)
-    did = c1.button("I did this break", use_container_width=True, disabled=(chosen_start is None))
-    # ICS download
+    st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        did = st.button("I did this break", use_container_width=True, disabled=(chosen_start is None))
     if chosen_start:
         ics = make_ics(
             summary=f"Break: {act}",
@@ -644,11 +613,14 @@ def page_accept():
             duration_min=dur,
             description=f"Suggested by Stress-Aware Scheduler."
         )
-        c2.download_button("Plan (.ics)", data=ics, file_name=f"break_{act.replace(' ','_')}.ics",
-                           mime="text/calendar", use_container_width=True)
+        with c2:
+            st.download_button("Plan (.ics)", data=ics, file_name=f"break_{act.replace(' ','_')}.ics",
+                               mime="text/calendar", use_container_width=True)
     else:
-        c2.write("")
-    back = c3.button("Back", use_container_width=True)
+        with c2: st.write("")
+    with c3:
+        back = st.button("Back", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     rec["start"] = chosen_start; rec["duration"] = dur
 
@@ -659,28 +631,33 @@ def page_accept():
     render_footer()
 
 def page_after():
-    rec=st.session_state.get("last_recommendation")
+    rec = st.session_state.get("last_recommendation")
     act = rec["activity"] if rec else "(activity)"
+
     st.markdown(f"<div class='wrapper'><div class='card'><div class='badge'>Feedback</div>"
                 f"<div class='h1'>How did it go?</div>"
                 f"<p class='p'>Tell me how the break changed your stress.</p>"
-                f"<div class='p'>Activity: <b>{act}</b></div></div></div>",unsafe_allow_html=True)
-    delta=st.slider("Stress change (−5 much worse → +5 much better)",-5,5,1)
-    exp=st.slider("Experience rating (1–10)",1,10,7)
-    if st.button("Next day ▶",use_container_width=True):
-        bandit_update(act,delta,exp)
-        st.session_state["last_recommendation"]=None
-        st.session_state["demo_day_offset"]+=1
-        st.session_state["fitbit_series_today_key"]=None
-        st.session_state["page"]="home"; st.rerun()
+                f"<div class='p'>Activity: <b>{act}</b></div></div></div>", unsafe_allow_html=True)
+
+    delta = st.slider("Stress change (−5 much worse → +5 much better)", -5, 5, 1)
+    exp = st.slider("Experience rating (1–10)", 1, 10, 7)
+
+    st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
+    if st.button("Next day ▶", use_container_width=True):
+        bandit_update(act, delta, exp)
+        st.session_state["last_recommendation"] = None
+        st.session_state["demo_day_offset"] += 1
+        st.session_state["fitbit_series_today_key"] = None
+        st.session_state["page"] = "home"; st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
     render_footer()
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Router
 # ──────────────────────────────────────────────────────────────────────────────
-pg=st.session_state["page"]
-if pg=="initial": page_initial()
-elif pg=="home": page_home()
-elif pg=="rec": page_rec()
-elif pg=="accept": page_accept()
+pg = st.session_state["page"]
+if pg == "initial": page_initial()
+elif pg == "home": page_home()
+elif pg == "rec": page_rec()
+elif pg == "accept": page_accept()
 else: page_after()
