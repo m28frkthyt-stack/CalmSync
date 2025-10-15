@@ -7,12 +7,12 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
-APP_VERSION = "v0.9.4-demo"
+APP_VERSION = "v0.9.5-demo"
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CSS — centered layout + stable pill styling via multiselect chips
+# CSS — centered layout + stable multiselect chip styling
 # ──────────────────────────────────────────────────────────────────────────────
 def read_css_file(name: str) -> str:
     try:
@@ -30,18 +30,9 @@ PASTEL_OVERLAY = """
   --ink-2: #432838;
 }
 
-body {
-  background: var(--pink-bg) !important;
-  font-family: 'Inter', system-ui, sans-serif;
-  color: var(--ink);
-}
+body { background: var(--pink-bg) !important; font-family: 'Inter', system-ui, sans-serif; color: var(--ink); }
 
-/* Center the app to a narrow mobile layout */
-.wrapper {
-  max-width: 340px;
-  margin: 0 auto;
-  padding: 0 10px;
-}
+.wrapper { max-width: 340px; margin: 0 auto; padding: 0 10px; }
 
 .card, .block, .rec-card {
   background: #ffffffcc !important;
@@ -51,31 +42,13 @@ body {
   margin-top: 28px !important;
 }
 
-.badge {
-  background: #ffd7e6 !important;
-  color: #8a3a5b !important;
-  border-radius: 999px;
-  padding: 6px 12px;
-  font-weight: 600;
-  display: inline-block;
-}
+.badge { background: #ffd7e6 !important; color: #8a3a5b !important; border-radius: 999px; padding: 6px 12px; font-weight: 600; display: inline-block; }
 
-.h1, .rec-title, .hello {
-  color: var(--ink-2);
-  font-weight: 700;
-  line-height: 1.3;
-  margin-bottom: 8px;
-  font-size: 1.25rem;
-}
+.h1, .rec-title, .hello { color: var(--ink-2); font-weight: 700; line-height: 1.3; margin-bottom: 8px; font-size: 1.25rem; }
 
-.p, .sub {
-  color: #5a3f4a;
-  line-height: 1.55;
-  word-break: break-word;
-  font-size: 1rem;
-}
+.p, .sub { color: #5a3f4a; line-height: 1.55; word-break: break-word; font-size: 1rem; }
 
-/* Full-width action buttons area */
+/* Full-width action buttons */
 .actions .stButton>button {
   width: 100% !important;
   padding: 12px 16px !important;
@@ -89,86 +62,29 @@ body {
 }
 
 /* Stress graph centered */
-.stress-visual-wrap {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  margin-top: 18px;
-  width: 100%;
-}
-.stress-visual {
-  max-width: 320px;
-  width: 100%;
-  background: #fff;
-  border-radius: 14px;
-  border: 1px solid #f7c2d6;
-  padding: 12px;
-  box-sizing: border-box;
-  text-align: center;
-}
-.viz-label {
-  font-size: 0.8rem;
-  color: #7f5b69;
-  background: #fff0f6;
-  border: 1px solid #f7c2d6;
-  padding: 3px 10px;
-  border-radius: 999px;
-  margin-bottom: 8px;
-  display: inline-block;
-}
+.stress-visual-wrap { display: flex; justify-content: center; align-items: center; margin-top: 18px; width: 100%; }
+.stress-visual { max-width: 320px; width: 100%; background: #fff; border-radius: 14px; border: 1px solid #f7c2d6; padding: 12px; box-sizing: border-box; text-align: center; }
+.viz-label { font-size: 0.8rem; color: #7f5b69; background: #fff0f6; border: 1px solid #f7c2d6; padding: 3px 10px; border-radius: 999px; margin-bottom: 8px; display: inline-block; }
 
 /* KV rows */
-.kv {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  margin: 8px 0;
-}
+.kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 8px 0; }
 .kv span:first-child { color: #7f5b69; }
 .kv span:last-child { font-weight: 600; color: #492635; }
 
 /* Footer */
-.footer {
-  text-align: center;
-  color: #8a3a5b;
-  font-size: 0.85rem;
-  opacity: 0.9;
-  margin: 40px 0 14px;
-}
+.footer { text-align: center; color: #8a3a5b; font-size: 0.85rem; opacity: 0.9; margin: 40px 0 14px; }
 
-/* ───────────────
-   Multiselect → small pill chips
-   We target Streamlit's token chips to make them small, pastel, and tappable.
-   ─────────────── */
-div[data-baseweb="select"] > div { 
-  border-radius: 14px; 
-  border: 1px solid #f7c2d6;
-}
-div[data-baseweb="select"] div[role="listbox"] { 
-  border-radius: 12px;
-}
-
+/* Multiselect → small pill chips */
+div[data-baseweb="select"] > div { border-radius: 14px; border: 1px solid #f7c2d6; }
+div[data-baseweb="select"] div[role="listbox"] { border-radius: 12px; }
 .stMultiSelect [data-baseweb="tag"] {
-  background: #ffeaf2 !important;
-  border: 1px solid #f7c2d6 !important;
-  color: #6d2f4a !important;
-  border-radius: 999px !important;
-  padding: 2px 8px !important;
-  margin: 4px !important;
-  font-weight: 600 !important;
-  font-size: 0.85rem !important;
+  background: #ffeaf2 !important; border: 1px solid #f7c2d6 !important;
+  color: #6d2f4a !important; border-radius: 999px !important;
+  padding: 2px 8px !important; margin: 4px !important;
+  font-weight: 600 !important; font-size: 0.85rem !important;
 }
-
-.stMultiSelect [data-baseweb="tag"] span {
-  color: #6d2f4a !important;
-}
-
-/* Dropdown options styling */
-.stMultiSelect [data-baseweb="menu"] div[role="option"] {
-  padding: 8px 10px;
-}
-
+.stMultiSelect [data-baseweb="tag"] span { color: #6d2f4a !important; }
+.stMultiSelect [data-baseweb="menu"] div[role="option"] { padding: 8px 10px; }
 """
 
 def inject_css():
@@ -191,7 +107,7 @@ def ss_init():
         "Power nap", "Quick tidy-up", "Listen to calm track"
     ])
     ss.setdefault("favorite_activities", [])
-    ss.setdefault("custom_activities", [])
+    ss.setdefault("ms_version", 0)  # multiselect version key (forces rebuild after Add)
     ss.setdefault("model", {"overall": {}})
     ss.setdefault("last_recommendation", None)
     ss.setdefault("epsilon", 0.05)
@@ -212,7 +128,7 @@ ss_init()
 inject_css()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utils: weather, calendar, SVG
+# Utils
 # ──────────────────────────────────────────────────────────────────────────────
 def now_local() -> datetime:
     return datetime.now() + timedelta(days=st.session_state.get("demo_day_offset", 0))
@@ -361,9 +277,7 @@ def svg_tag(svg):
     enc=urllib.parse.quote(svg)
     return f"<img src='data:image/svg+xml;utf8,{enc}' width='288' height='120'/>"
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Demo stress data
-# ──────────────────────────────────────────────────────────────────────────────
 def generate_demo_series(target_peaks, length=48):
     base = randint(38,55)
     series = [base + 5*math.sin(i/5.5)+randint(-3,3) for i in range(length)]
@@ -387,9 +301,7 @@ def ensure_series_for_demo_day():
     st.session_state["fitbit_peaks_today"]=peaks_today
     st.session_state["fitbit_series_today_key"]=key
 
-# ──────────────────────────────────────────────────────────────────────────────
 # Bandit model — delta stress + small experience nudge
-# ──────────────────────────────────────────────────────────────────────────────
 def bandit_choose(favorites, epsilon=0.05, tau=0.8):
     model = st.session_state["model"]["overall"]
     scores = [(a, model.get(a, {"value":0})["value"]) for a in favorites]
@@ -437,35 +349,35 @@ def page_initial():
     </div>
     """, unsafe_allow_html=True)
 
-    # Favorites via robust multiselect (styled as pill chips)
-    current_defaults = st.session_state.get("favorite_activities", [])
+    # Favorites (multiselect chips). We use a versioned key so we can rebuild after adding a custom item.
+    ms_key = f"fav_ms_{st.session_state['ms_version']}"
+    defaults = st.session_state.get("favorite_activities", [])
     selected = st.multiselect(
         "Your favorite activities",
-        st.session_state["all_activities"],
-        default=current_defaults,
+        options=st.session_state["all_activities"],
+        default=defaults,
         label_visibility="collapsed",
-        key="fav_multiselect",
+        key=ms_key,
         help="Tap to toggle. Multiple per row."
     )
 
-    # Add custom activity
-    st.markdown("<div class='wrapper'><div class='card'><div class='badge'>Add custom activity</div>", unsafe_allow_html=True)
+    # Inline "add custom" inside the same card
     c1, c2 = st.columns([0.7, 0.3])
     with c1:
-        new_act = st.text_input(" ", placeholder="e.g., Journal for 5 min", label_visibility="collapsed", key="custom_add")
+        new_act = st.text_input(" ", placeholder="Add custom (e.g., Journal 5m)", label_visibility="collapsed", key=f"custom_add_{st.session_state['ms_version']}")
     with c2:
-        if st.button("Add"):
-            if new_act and new_act.strip() and new_act.strip() not in st.session_state["all_activities"]:
+        if st.button("Add", key=f"add_btn_{st.session_state['ms_version']}"):
+            if new_act and new_act.strip():
                 na = new_act.strip()
-                st.session_state["all_activities"].append(na)
-                st.session_state["model"]["overall"].setdefault(na, {"n":0,"value":0.0})
-                # Update multiselect defaults immediately
-                selected = list(selected) + [na]
-                st.session_state["fav_multiselect"] = selected
+                if na not in st.session_state["all_activities"]:
+                    st.session_state["all_activities"].append(na)
+                    st.session_state["model"]["overall"].setdefault(na, {"n":0,"value":0.0})
+                # Update defaults to include the new item and force rebuild with a new key
+                st.session_state["favorite_activities"] = list(set(selected + [na]))
+                st.session_state["ms_version"] += 1
                 st.rerun()
-    st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # Calendar URL
+    # Calendar URL inside the same card for setup convenience
     st.markdown("<div class='wrapper'><div class='card'><div class='badge'>Calendar (.ics) URL</div>", unsafe_allow_html=True)
     cal_url = st.text_input("Calendar (.ics) URL", value=st.session_state.get("calendar_url",""))
     colc1, colc2 = st.columns(2)
@@ -482,7 +394,7 @@ def page_initial():
         st.caption(st.session_state["calendar_last_status"])
     st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # Next (full-width)
+    # Next
     st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
     if st.button("Next →", use_container_width=True):
         if len(selected) < 3:
