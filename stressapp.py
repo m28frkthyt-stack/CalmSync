@@ -6,8 +6,10 @@ import time
 import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo  # <-- ensure local time is Europe/Amsterdam
 
-APP_VERSION = "v1.0.3"
+APP_VERSION = "v1.0.4"
+TZ = ZoneInfo("Europe/Amsterdam")
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
@@ -39,7 +41,7 @@ html,body,.stApp,[data-testid="stAppViewContainer"], .stAppViewContainer, .main,
 }
 .h1,.rec-title,.hello{color:var(--ink);font-weight:700;line-height:1.3;margin-bottom:8px;font-size:1.25rem;}
 .p,.sub{color:var(--ink-sub);line-height:1.55;font-size:1rem;}
-.p.lead-space{margin-bottom:14px;}  /* extra spacing after step-1 explanation */
+.p.lead-space{margin-bottom:14px;}  /* extra spacing under step-1 explanation */
 
 .badge{background:#ffd7e6;color:#8a3a5b;border-radius:999px;padding:6px 12px;font-weight:600;display:inline-block}
 
@@ -111,10 +113,11 @@ ss_init()
 inject_css()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utils
+# Utils (timezone-correct)
 # ──────────────────────────────────────────────────────────────────────────────
 def now_local()->datetime:
-    return datetime.now()+timedelta(days=st.session_state.get("demo_day_offset",0))
+    # Return aware datetime in Europe/Amsterdam, shifted by demo day offset
+    return datetime.now(TZ) + timedelta(days=st.session_state.get("demo_day_offset",0))
 
 EHV_LAT,EHV_LON=51.4416,5.4697
 def fetch_weather():
@@ -128,23 +131,42 @@ def fetch_weather():
     except Exception:
         return {"precip":0.0,"wind":3.0}
 
-def _to_local(dt):
-    if getattr(dt,"tzinfo",None) is None: return dt
-    return datetime.fromtimestamp(dt.timestamp())
-def _parse_ics_dt(s):
-    s=s.strip()
-    if len(s)==8 and s.isdigit():
-        d=datetime.strptime(s,"%Y%m%d"); start=d.replace(hour=0,minute=0,second=0,microsecond=0); return ("allday",start,start+timedelta(days=1))
-    if s.endswith("Z"): return _to_local(datetime.strptime(s,"%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc))
-    try: return datetime.strptime(s,"%Y%m%dT%H%M%S")
-    except: return None
-def _unfold_ics_lines(text):
-    out=[]; 
+def _to_amsterdam(dt: datetime) -> datetime:
+    """Convert any datetime to Europe/Amsterdam and return tz-aware."""
+    if dt.tzinfo is None:
+        # Assume naive times are Europe/Amsterdam
+        return dt.replace(tzinfo=TZ)
+    return dt.astimezone(TZ)
+
+def _parse_ics_dt(val: str):
+    """Return tz-aware Europe/Amsterdam datetime (or tuple for all-day)."""
+    s = val.strip()
+    # All-day date (DTSTART:YYYYMMDD)
+    if len(s) == 8 and s.isdigit():
+        day = datetime.strptime(s, "%Y%m%d").replace(tzinfo=TZ)
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+        return ("allday", start, end)
+    # UTC (ends with Z)
+    if s.endswith("Z"):
+        dt = datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        return dt.astimezone(TZ)
+    # Local without TZ: assume Amsterdam
+    try:
+        dt = datetime.strptime(s, "%Y%m%dT%H%M%S").replace(tzinfo=TZ)
+        return dt
+    except Exception:
+        return None
+
+def _unfold_ics_lines(text: str):
+    out=[]
     for line in text.splitlines():
         if line.startswith(" ") and out: out[-1]+=line[1:]
         else: out.append(line)
     return out
-def parse_ics(text):
+
+def parse_ics(text: str):
+    """Parse .ics into list of dicts: {start,end,busy,summary} as tz-aware in Amsterdam."""
     evs=[]; lines=_unfold_ics_lines(text); in_ev=False
     dtstart=dtend=transp=busystatus=summary=None
     for ln in lines:
@@ -156,11 +178,11 @@ def parse_ics(text):
                 if isinstance(stp,tuple):
                     start, end = stp[1], (enp[1] if isinstance(enp,tuple) else stp[2])
                 else:
-                    start, end = stp, (enp if enp else stp+timedelta(hours=1))
+                    start, end = stp, (enp if enp else (_to_amsterdam(stp)+timedelta(hours=1)))
                 tr=(transp or "").upper().strip(); bs=(busystatus or "").upper().strip()
                 busy=not (tr=="TRANSPARENT" or bs=="FREE")
                 if start and end and end>start:
-                    evs.append({"start":start,"end":end,"busy":busy,"summary":(summary or "").strip()})
+                    evs.append({"start":_to_amsterdam(start),"end":_to_amsterdam(end),"busy":busy,"summary":(summary or "").strip()})
             in_ev=False; continue
         if not in_ev: continue
         if ln.startswith("DTSTART"): dtstart=ln.split(":",1)[-1]
@@ -169,40 +191,52 @@ def parse_ics(text):
         elif "BUSYSTATUS" in ln:     busystatus=ln.split(":",1)[-1]
         elif ln.startswith("SUMMARY"): summary=ln.split(":",1)[-1]
     return evs
+
 def fetch_and_cache_calendar(url:str):
     if not url.strip():
         st.session_state["calendar_last_status"]=""; st.session_state["calendar_events"]=[]; return
     try:
         r=requests.get(url,timeout=10); r.raise_for_status()
-        events=parse_ics(r.text); nowr=datetime.now(); horizon=nowr+timedelta(days=30)
+        events=parse_ics(r.text); nowr=now_local(); horizon=nowr+timedelta(days=30)
         busy=[(e["start"],e["end"],e.get("summary","")) for e in events if e.get("busy",True) and not (e["end"]<nowr or e["start"]>horizon)]
         busy.sort(key=lambda x:x[0]); st.session_state["calendar_events"]=busy
         st.session_state["calendar_last_status"]=f"Loaded {len(busy)} busy events."
     except Exception as ex:
         st.session_state["calendar_events"]=[]; st.session_state["calendar_last_status"]=f"Failed to load calendar: {ex}"
-def overlaps_busy(start_dt,end_dt):
-    for s,e,_ in st.session_state.get("calendar_events",[]): 
-        if start_dt<e and end_dt>s: return True
+
+def overlaps_busy(start_dt: datetime, end_dt: datetime) -> bool:
+    for s,e,_ in st.session_state.get("calendar_events",[]):
+        if start_dt < e and end_dt > s: return True
     return False
-def list_available_slots(day_dt,duration_min):
-    day=day_dt.date(); earliest=datetime.combine(day,datetime.min.time()).replace(hour=8); latest=datetime.combine(day,datetime.min.time()).replace(hour=22)
-    step=timedelta(minutes=30); dur=timedelta(minutes=duration_min); real_today=datetime.now().date(); cutoff=earliest if day!=real_today else datetime.now()
+
+def list_available_slots(day_dt: datetime, duration_min: int):
+    day=day_dt.date()
+    earliest=datetime(day.year,day.month,day.day,8,0,0,tzinfo=TZ)
+    latest  =datetime(day.year,day.month,day.day,22,0,0,tzinfo=TZ)
+    step=timedelta(minutes=30); dur=timedelta(minutes=duration_min)
+    real_today = now_local().date()
+    cutoff = earliest if day != real_today else now_local()
     slots=[]; cur=earliest
-    while cur+dur<=latest:
-        ok=not overlaps_busy(cur,cur+dur)
-        if day!=real_today:
-            if ok: slots.append(cur)
-        else:
-            if cur>=cutoff and ok: slots.append(cur)
-        cur+=step
+    while cur + dur <= latest:
+        if not overlaps_busy(cur, cur + dur):
+            if day != real_today or cur >= cutoff:
+                slots.append(cur)
+        cur += step
     return slots
-def make_ics(summary,start_dt,duration_min,description=""):
-    end_dt=start_dt+timedelta(minutes=duration_min); fmt=lambda dt: dt.strftime("%Y%m%dT%H%M%S")
-    uid=f"{int(time.time())}-{abs(hash(summary))}@stress-aware"; desc=description.replace("\\n"," ")
-    ics=["BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//StressAware//BreakScheduler//EN","BEGIN:VEVENT",
-         f"UID:{uid}",f"DTSTAMP:{fmt(now_local())}",f"DTSTART:{fmt(start_dt)}",f"DTEND:{fmt(end_dt)}",
-         f"SUMMARY:{summary}",f"DESCRIPTION:{desc}","END:VEVENT","END:VCALENDAR"]
+
+def make_ics(summary, start_dt, duration_min, description=""):
+    end_dt = start_dt + timedelta(minutes=duration_min)
+    # Export as local (naive) timestamps per iCal norm (clients infer local)
+    fmt = lambda dt: dt.strftime("%Y%m%dT%H%M%S")
+    uid = f"{int(time.time())}-{abs(hash(summary))}@stress-aware"
+    desc = description.replace("\n", " ")
+    ics = [
+        "BEGIN:VCALENDAR","VERSION:2.0","PRODID:-//StressAware//BreakScheduler//EN","BEGIN:VEVENT",
+        f"UID:{uid}", f"DTSTAMP:{fmt(now_local())}", f"DTSTART:{fmt(start_dt)}", f"DTEND:{fmt(end_dt)}",
+        f"SUMMARY:{summary}", f"DESCRIPTION:{desc}", "END:VEVENT","END:VCALENDAR"
+    ]
     return "\n".join(ics).encode("utf-8")
+
 def series_svg(series):
     n=len(series); w,h=288,120; pad=8; mn,mx=min(series),max(series); rng=max(1,mx-mn)
     sx=lambda i: pad+(w-2*pad)*(i/max(1,n-1)); sy=lambda v: pad+(h-2*pad)*(1-(v-mn)/rng)
@@ -210,10 +244,11 @@ def series_svg(series):
     svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none'>"
     svg+="<defs><linearGradient id='grad' x1='0' x2='1'><stop offset='0%' stop-color='#ff6aa9'/><stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs>"
     svg+=f"<polyline points='{pts}' fill='none' stroke='url(#grad)' stroke-width='2'/></svg>"; return svg
+
 def svg_tag(svg):
     return f"<img src='data:image/svg+xml;utf8,{urllib.parse.quote(svg)}' width='288' height='120'/>"
 
-# Demo stress series
+# Demo stress data
 def generate_demo_series(peaks,length=48):
     base=randint(38,55); s=[base+5*math.sin(i/5.5)+randint(-3,3) for i in range(length)]
     centers=[]; tries=0
@@ -225,6 +260,7 @@ def generate_demo_series(peaks,length=48):
         for j in range(-2,3):
             idx=max(0,min(length-1,c+j)); s[idx]+=randint(10,25)*(1-abs(j)/3)
     return s
+
 def ensure_series_for_demo_day():
     key=f"series_{st.session_state.get('demo_day_offset',0)}"
     if st.session_state.get("fitbit_series_today_key")==key: return
@@ -243,17 +279,19 @@ def bandit_choose(favs,epsilon=0.05,tau=0.8):
         cum+=v/tot
         if r<=cum: return a,dict(scores)
     return exps[-1][0],dict(scores)
+
 def bandit_update(activity,delta_stress,exp_rating):
     stt=st.session_state["model"]["overall"].setdefault(activity,{"n":0,"value":0.0})
     reward=float(delta_stress)+0.2*(float(exp_rating)-5.0); n=stt["n"]+1; stt["value"]+= (reward-stt["value"])/n; stt["n"]=n
+
 def expectation_text(activity):
     s=st.session_state["model"]["overall"].get(activity,{"n":0,"value":0}); n=s["n"]; m=s["value"]
-    if n==0: return "I don’t know much about this type of break yet — let’s see how it affects you."
+    if n==0: return "I don’t know much about this type of break yet — let’s see how it affects your stress."
     if m<=-2: return "May increase stress for you; consider alternatives."
     if m<-0.5: return "Tends to feel counterproductive in reducing stress, but you may try once again."
-    if m<0.5: return "Mixed results so far, do you want to give it another shot?."
-    if m<2.5: return "Expected to provide a gentle relief of stress."
-    if m<4: return "Expected to noticeably lower stress."
+    if m<0.5: return "Mixed results so far — want to give it another shot?"
+    if m<2.5: return "Expected to provide a gentle reduction in stress."
+    if m<4: return "Expected to noticeably lower your stress."
     return "Often provides a strong reduction in stress."
 
 # Calendar mini-overview
@@ -263,8 +301,10 @@ def todays_calendar_lines(day_dt: datetime):
     day = day_dt.date()
     lines = []
     for s, e, title in events:
+        # if either side touches today, show it
         if s.date()!=day and e.date()!=day: continue
-        stt=s.strftime("%H:%M"); ett=e.strftime("%H:%M"); label=title if title else "Busy"
+        stt=s.astimezone(TZ).strftime("%H:%M"); ett=e.astimezone(TZ).strftime("%H:%M")
+        label=title if title else "Busy"
         lines.append(f"<span class='when'>{stt}–{ett}</span> · {label}")
     return sorted(lines)[:4]
 
@@ -347,7 +387,7 @@ def page_home():
                 f"{st.session_state['weather']['precip']:.1f}mm · wind {st.session_state['weather']['wind']:.1f}m/s</div></div>",
                 unsafe_allow_html=True)
 
-    # Stress graph + calendar mini-overview (with title "schedule today")
+    # Stress graph + calendar mini-overview
     lines = todays_calendar_lines(now_local())
     cal_html = "<div class='line'>No calendar connected</div>" if (not st.session_state.get("calendar_url")) else (
         "<div class='line'>No events today</div>" if not lines else "".join([f"<div class='line'>{ln}</div>" for ln in lines])
@@ -427,7 +467,7 @@ def page_accept():
 
     st.markdown(f"<div class='wrapper'><div class='rec-card'><div class='rec-title'>Start your break</div>"
                 f"<div class='kv'><span>Activity</span><span>{act}</span></div>"
-                f"<div class='kv'><span>Start</span><span>{start.strftime('%H:%M') if start else '—'}</span></div>"
+                f"<div class='kv'><span>Start</span><span>{start.astimezone(TZ).strftime('%H:%M') if start else '—'}</span></div>"
                 f"<div class='kv'><span>Duration</span><span>{dur} min</span></div></div></div>", unsafe_allow_html=True)
 
     st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
@@ -458,14 +498,16 @@ def page_after():
         <div class='p' style='text-align:center; margin-top:6px;'>
           <b>Activity:</b> {act}
         </div>
-        <div class='p' style='text-align:center; margin-top:10px;'>
-          Move the slider: <i>-5 means it felt much worse, +5 means it felt much better</i>.
-        </div>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Centered slider (label collapsed) default 0
+    # Centered, clearer stress-change control (default 0)
+    st.markdown("<div class='wrapper' style='text-align:center; margin-top:8px;'>"
+                "<div class='p'><b>Stress change</b></div>"
+                "<div class='sub' style='margin-top:2px;'>"
+                "−5 = much higher stress · 0 = no change · +5 = much lower stress"
+                "</div></div>", unsafe_allow_html=True)
     delta = st.slider(" ", -5, 5, 0, label_visibility="collapsed")
     exp = st.slider("Experience rating (1–10)", 1, 10, 7)
 
