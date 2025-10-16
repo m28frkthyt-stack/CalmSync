@@ -7,12 +7,12 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
-APP_VERSION = "v0.9.5-demo"
+APP_VERSION = "v1.0.0"
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# CSS — centered layout + stable multiselect chip styling
+# CSS — soft pastel pink bg + white buttons, centered layout, stable chips
 # ──────────────────────────────────────────────────────────────────────────────
 def read_css_file(name: str) -> str:
     try:
@@ -23,14 +23,15 @@ def read_css_file(name: str) -> str:
 
 PASTEL_OVERLAY = """
 :root {
-  --pink-bg: #fff3f8;
-  --pink-acc: #ff6aa9;
-  --pink-acc-2: #f9a7c1;
-  --ink: #5a3a50;
-  --ink-2: #432838;
+  --bg: #ffeef6;         /* softer pastel pink */
+  --ink: #432838;        /* deep plum ink */
+  --ink-sub: #5a3f4a;    /* subtext */
+  --pink-acc: #ff6aa9;   /* accent for borders/icons */
+  --pink-acc-2: #f9a7c1; /* gradient end (used minimally) */
+  --border: #f7c2d6;     /* soft pink border */
 }
 
-body { background: var(--pink-bg) !important; font-family: 'Inter', system-ui, sans-serif; color: var(--ink); }
+body { background: var(--bg) !important; font-family: 'Inter', system-ui, sans-serif; color: var(--ink); }
 
 .wrapper { max-width: 340px; margin: 0 auto; padding: 0 10px; }
 
@@ -42,29 +43,39 @@ body { background: var(--pink-bg) !important; font-family: 'Inter', system-ui, s
   margin-top: 28px !important;
 }
 
-.badge { background: #ffd7e6 !important; color: #8a3a5b !important; border-radius: 999px; padding: 6px 12px; font-weight: 600; display: inline-block; }
-
-.h1, .rec-title, .hello { color: var(--ink-2); font-weight: 700; line-height: 1.3; margin-bottom: 8px; font-size: 1.25rem; }
-
-.p, .sub { color: #5a3f4a; line-height: 1.55; word-break: break-word; font-size: 1rem; }
-
-/* Full-width action buttons */
-.actions .stButton>button {
-  width: 100% !important;
-  padding: 12px 16px !important;
-  margin: 10px 0 22px 0 !important;
-  font-size: 1rem !important;
-  border-radius: 999px !important;
-  border: 0 !important;
-  background: linear-gradient(90deg, var(--pink-acc), var(--pink-acc-2)) !important;
-  color: #fff !important;
-  font-weight: 700 !important;
+.badge {
+  background: #ffd7e6 !important;
+  color: #8a3a5b !important;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 600;
+  display: inline-block;
 }
+
+.h1, .rec-title, .hello { color: var(--ink); font-weight: 700; line-height: 1.3; margin-bottom: 8px; font-size: 1.25rem; }
+.p, .sub { color: var(--ink-sub); line-height: 1.55; word-break: break-word; font-size: 1rem; }
+
+/* Global button style → white, full-width in .actions; compact elsewhere */
+.stButton>button {
+  appearance: none !important;
+  background: #fff !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 999px !important;
+  padding: 10px 14px !important;
+  font-weight: 700 !important;
+  font-size: 0.98rem !important;
+  margin: 8px 6px !important;
+}
+.stButton>button:hover { background: #fff !important; filter: brightness(0.99); border-color: #f3a9c4 !important; }
+
+/* Actions block: make buttons full width */
+.actions .stButton>button { width: 100% !important; margin: 10px 0 22px 0 !important; }
 
 /* Stress graph centered */
 .stress-visual-wrap { display: flex; justify-content: center; align-items: center; margin-top: 18px; width: 100%; }
-.stress-visual { max-width: 320px; width: 100%; background: #fff; border-radius: 14px; border: 1px solid #f7c2d6; padding: 12px; box-sizing: border-box; text-align: center; }
-.viz-label { font-size: 0.8rem; color: #7f5b69; background: #fff0f6; border: 1px solid #f7c2d6; padding: 3px 10px; border-radius: 999px; margin-bottom: 8px; display: inline-block; }
+.stress-visual { max-width: 320px; width: 100%; background: #fff; border-radius: 14px; border: 1px solid var(--border); padding: 12px; box-sizing: border-box; text-align: center; }
+.viz-label { font-size: 0.8rem; color: #7f5b69; background: #fff0f6; border: 1px solid var(--border); padding: 3px 10px; border-radius: 999px; margin-bottom: 8px; display: inline-block; }
 
 /* KV rows */
 .kv { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 8px 0; }
@@ -75,10 +86,10 @@ body { background: var(--pink-bg) !important; font-family: 'Inter', system-ui, s
 .footer { text-align: center; color: #8a3a5b; font-size: 0.85rem; opacity: 0.9; margin: 40px 0 14px; }
 
 /* Multiselect → small pill chips */
-div[data-baseweb="select"] > div { border-radius: 14px; border: 1px solid #f7c2d6; }
+div[data-baseweb="select"] > div { border-radius: 14px; border: 1px solid var(--border); }
 div[data-baseweb="select"] div[role="listbox"] { border-radius: 12px; }
 .stMultiSelect [data-baseweb="tag"] {
-  background: #ffeaf2 !important; border: 1px solid #f7c2d6 !important;
+  background: #fff !important; border: 1px solid var(--border) !important;
   color: #6d2f4a !important; border-radius: 999px !important;
   padding: 2px 8px !important; margin: 4px !important;
   font-weight: 600 !important; font-size: 0.85rem !important;
@@ -128,7 +139,7 @@ ss_init()
 inject_css()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Utils
+# Utils: weather, calendar, SVG, bandit
 # ──────────────────────────────────────────────────────────────────────────────
 def now_local() -> datetime:
     return datetime.now() + timedelta(days=st.session_state.get("demo_day_offset", 0))
@@ -325,13 +336,13 @@ def bandit_update(activity, delta_stress, exp_rating):
     stats["n"] = n
 
 def expectation_text(activity):
-    s=st.session_state["model"]["overall"].get(activity,{"n":0,"value":0})
-    n=s["n"]; m=s["value"]
-    if n==0: return "I don’t know yet — let’s see how it affects you."
+    s = st.session_state["model"]["overall"].get(activity, {"n":0,"value":0})
+    n = s["n"]; m = s["value"]
+    if n==0: return "I don’t know much about this type of break yet — let’s see how it affects you."
     if m<=-2: return "May increase stress for you; consider alternatives."
-    if m<-0.5: return "Tends to feel counterproductive."
-    if m<0.5: return "Mixed results so far."
-    if m<2.5: return "Expected to provide a gentle relief."
+    if m<-0.5: return "Tends to feel counterproductive in reducing stress, but you may try once again."
+    if m<0.5: return "Mixed results so far, do you want to give it another shot?."
+    if m<2.5: return "Expected to provide a gentle relief of stress."
     if m<4: return "Expected to noticeably lower stress."
     return "Often provides a strong reduction in stress."
 
@@ -339,17 +350,20 @@ def expectation_text(activity):
 # Pages
 # ──────────────────────────────────────────────────────────────────────────────
 def page_initial():
-    st.markdown("""
+    st.markdown(f"""
     <div class='wrapper'>
       <div class='card'>
         <div class='badge'>Step 1</div>
         <div class='h1'>Let’s create your personal advice!</div>
-        <p class='p'>Pick at least three favorite activities. Add your own if you like.</p>
+        <p class='p'>
+          Pick at least three favorite activities. You can also add your own —
+          and if you like, paste your calendar <b>.ics</b> URL so we avoid clashes.
+        </p>
       </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Favorites (multiselect chips). We use a versioned key so we can rebuild after adding a custom item.
+    # Favorites (multiselect chips). Versioned key so we can rebuild after adding a custom item.
     ms_key = f"fav_ms_{st.session_state['ms_version']}"
     defaults = st.session_state.get("favorite_activities", [])
     selected = st.multiselect(
@@ -361,10 +375,12 @@ def page_initial():
         help="Tap to toggle. Multiple per row."
     )
 
-    # Inline "add custom" inside the same card
+    # Inline "add custom" next to favorites inside same section
     c1, c2 = st.columns([0.7, 0.3])
     with c1:
-        new_act = st.text_input(" ", placeholder="Add custom (e.g., Journal 5m)", label_visibility="collapsed", key=f"custom_add_{st.session_state['ms_version']}")
+        new_act = st.text_input(" ", placeholder="Add custom (e.g., Journal 5m)",
+                                label_visibility="collapsed",
+                                key=f"custom_add_{st.session_state['ms_version']}")
     with c2:
         if st.button("Add", key=f"add_btn_{st.session_state['ms_version']}"):
             if new_act and new_act.strip():
@@ -372,13 +388,13 @@ def page_initial():
                 if na not in st.session_state["all_activities"]:
                     st.session_state["all_activities"].append(na)
                     st.session_state["model"]["overall"].setdefault(na, {"n":0,"value":0.0})
-                # Update defaults to include the new item and force rebuild with a new key
-                st.session_state["favorite_activities"] = list(set(selected + [na]))
+                st.session_state["favorite_activities"] = list(dict.fromkeys(selected + [na]))
                 st.session_state["ms_version"] += 1
                 st.rerun()
 
-    # Calendar URL inside the same card for setup convenience
-    st.markdown("<div class='wrapper'><div class='card'><div class='badge'>Calendar (.ics) URL</div>", unsafe_allow_html=True)
+    # Calendar URL (no pink badge/pill — just simple inputs)
+    st.markdown("<div class='wrapper'><div class='card'>", unsafe_allow_html=True)
+    st.markdown("<div class='p' style='margin-bottom:6px;'>Calendar (.ics) URL</div>", unsafe_allow_html=True)
     cal_url = st.text_input("Calendar (.ics) URL", value=st.session_state.get("calendar_url",""))
     colc1, colc2 = st.columns(2)
     with colc1:
@@ -394,7 +410,7 @@ def page_initial():
         st.caption(st.session_state["calendar_last_status"])
     st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # Next
+    # Next (full-width)
     st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
     if st.button("Next →", use_container_width=True):
         if len(selected) < 3:
@@ -420,31 +436,29 @@ def page_home():
                 f"{st.session_state['weather']['wind']:.1f}m/s</div></div>", unsafe_allow_html=True)
 
     # Stress graph
-    st.markdown("<div class='wrapper'><div class='block'><div class='badge'>Stress Overview</div>"
-                "<div class='stress-visual-wrap'><div class='stress-visual'><div class='viz-label'>Demo stress (Fitbit-like)</div>"
+    st.markdown("<div class='wrapper'><div class='block'>"
+                "<div class='badge'>Stress Overview</div>"
+                "<div class='stress-visual-wrap'><div class='stress-visual'>"
+                "<div class='viz-label'>Demo stress (Fitbit-like)</div>"
                 f"{svg_tag(series_svg(series))}</div></div>"
-                f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div></div></div>", unsafe_allow_html=True)
+                f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div>"
+                "</div></div>", unsafe_allow_html=True)
 
-    # Actions
+    # Status
     msg = "High stress detected — a break is recommended" if high else "No excess stress — you can schedule a break"
     st.markdown(f"<div class='wrapper'><div class='badge'>{msg}</div></div>", unsafe_allow_html=True)
 
+    # Top actions (Suggest + Refresh) — NOT including Next day anymore
     st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         go = st.button("Suggest break", use_container_width=True)
     with c2:
-        nxt = st.button("Next day ▶", use_container_width=True)
-    with c3:
         ref = st.button("Refresh calendar", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if ref and st.session_state.get("calendar_url"):
         fetch_and_cache_calendar(st.session_state["calendar_url"]); st.rerun()
-    if nxt:
-        st.session_state["demo_day_offset"] += 1
-        st.session_state["fitbit_series_today_key"] = None
-        st.session_state["last_recommendation"] = None
-        st.rerun()
 
     if go:
         favs = st.session_state["favorite_activities"]
@@ -454,7 +468,16 @@ def page_home():
             st.session_state["page"] = "rec"; st.rerun()
         else:
             st.info("No favorites saved yet. Go back to add some.")
+
+    # NEXT DAY — single full-width button at the very bottom
+    st.markdown("<div class='wrapper actions'>", unsafe_allow_html=True)
+    if st.button("Next day ▶", use_container_width=True):
+        st.session_state["demo_day_offset"] += 1
+        st.session_state["fitbit_series_today_key"] = None
+        st.session_state["last_recommendation"] = None
+        st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
+
     render_footer()
 
 def page_rec():
