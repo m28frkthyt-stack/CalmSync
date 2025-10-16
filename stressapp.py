@@ -7,7 +7,7 @@ import urllib.parse
 from random import randint, random
 from datetime import datetime, timedelta, timezone
 
-APP_VERSION = "v1.0.1"
+APP_VERSION = "v1.0.2"
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
 
@@ -56,6 +56,11 @@ html,body,.stApp,[data-testid="stAppViewContainer"], .stAppViewContainer, .main,
 /* Key/Value lines */
 .kv{display:flex;justify-content:space-between;gap:12px;margin:8px 0}
 .kv span:first-child{color:#7f5b69}.kv span:last-child{font-weight:600;color:#492635}
+
+/* Calendar mini-overview list */
+.calmini{margin-top:10px;text-align:center}
+.calmini .line{font-size:.9rem;color:#5a3f4a;margin:2px 0}
+.calmini .when{font-weight:700;color:#492635}
 
 /* Footer */
 .footer{text-align:center;color:#8a3a5b;font-size:.85rem;opacity:.9;margin:40px 0 14px}
@@ -120,6 +125,7 @@ def fetch_weather():
 def _to_local(dt):
     if getattr(dt,"tzinfo",None) is None: return dt
     return datetime.fromtimestamp(dt.timestamp())
+
 def _parse_ics_dt(s):
     s=s.strip()
     if len(s)==8 and s.isdigit():
@@ -127,44 +133,59 @@ def _parse_ics_dt(s):
     if s.endswith("Z"): return _to_local(datetime.strptime(s,"%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc))
     try: return datetime.strptime(s,"%Y%m%dT%H%M%S")
     except: return None
+
 def _unfold_ics_lines(text):
-    out=[]; 
+    out=[]
     for line in text.splitlines():
         if line.startswith(" ") and out: out[-1]+=line[1:]
         else: out.append(line)
     return out
+
 def parse_ics(text):
-    evs=[]; lines=_unfold_ics_lines(text); in_ev=False; dtstart=dtend=transp=busystatus=None
+    """Parse .ics into list of dicts: {start,end,busy,summary}."""
+    evs=[]; lines=_unfold_ics_lines(text); in_ev=False
+    dtstart=dtend=transp=busystatus=summary=None
     for ln in lines:
-        if ln.startswith("BEGIN:VEVENT"): in_ev=True; dtstart=dtend=transp=busystatus=None; continue
+        if ln.startswith("BEGIN:VEVENT"):
+            in_ev=True; dtstart=dtend=transp=busystatus=summary=None; continue
         if ln.startswith("END:VEVENT"):
             if in_ev and dtstart:
                 stp=_parse_ics_dt(dtstart); enp=_parse_ics_dt(dtend) if dtend else None
-                if isinstance(stp,tuple): start, end = stp[1], (enp[1] if isinstance(enp,tuple) else stp[2])
-                else: start, end = stp, (enp if enp else stp+timedelta(hours=1))
-                tr=(transp or "").upper().strip(); bs=(busystatus or "").upper().strip(); busy=not (tr=="TRANSPARENT" or bs=="FREE")
-                if start and end and end>start: evs.append({"start":start,"end":end,"busy":busy})
+                if isinstance(stp,tuple):
+                    start, end = stp[1], (enp[1] if isinstance(enp,tuple) else stp[2])
+                else:
+                    start, end = stp, (enp if enp else stp+timedelta(hours=1))
+                tr=(transp or "").upper().strip(); bs=(busystatus or "").upper().strip()
+                busy=not (tr=="TRANSPARENT" or bs=="FREE")
+                if start and end and end>start:
+                    evs.append({"start":start,"end":end,"busy":busy,"summary":(summary or "").strip()})
             in_ev=False; continue
         if not in_ev: continue
         if ln.startswith("DTSTART"): dtstart=ln.split(":",1)[-1]
         elif ln.startswith("DTEND"): dtend=ln.split(":",1)[-1]
         elif ln.startswith("TRANSP"): transp=ln.split(":",1)[-1]
-        elif "BUSYSTATUS" in ln: busystatus=ln.split(":",1)[-1]
+        elif "BUSYSTATUS" in ln:     busystatus=ln.split(":",1)[-1]
+        elif ln.startswith("SUMMARY"): summary=ln.split(":",1)[-1]
     return evs
+
 def fetch_and_cache_calendar(url:str):
     if not url.strip():
         st.session_state["calendar_last_status"]=""; st.session_state["calendar_events"]=[]; return
     try:
         r=requests.get(url,timeout=10); r.raise_for_status()
         events=parse_ics(r.text); nowr=datetime.now(); horizon=nowr+timedelta(days=30)
-        busy=[(e["start"],e["end"]) for e in events if e.get("busy",True) and not (e["end"]<nowr or e["start"]>horizon)]
-        busy.sort(key=lambda x:x[0]); st.session_state["calendar_events"]=busy; st.session_state["calendar_last_status"]=f"Loaded {len(busy)} busy events."
+        busy=[(e["start"],e["end"],e.get("summary","")) for e in events if e.get("busy",True) and not (e["end"]<nowr or e["start"]>horizon)]
+        busy.sort(key=lambda x:x[0])
+        st.session_state["calendar_events"]=busy
+        st.session_state["calendar_last_status"]=f"Loaded {len(busy)} busy events."
     except Exception as ex:
         st.session_state["calendar_events"]=[]; st.session_state["calendar_last_status"]=f"Failed to load calendar: {ex}"
+
 def overlaps_busy(start_dt,end_dt):
-    for s,e in st.session_state.get("calendar_events",[]): 
+    for s,e,_ in st.session_state.get("calendar_events",[]): 
         if start_dt<e and end_dt>s: return True
     return False
+
 def list_available_slots(day_dt,duration_min):
     day=day_dt.date(); earliest=datetime.combine(day,datetime.min.time()).replace(hour=8); latest=datetime.combine(day,datetime.min.time()).replace(hour=22)
     step=timedelta(minutes=30); dur=timedelta(minutes=duration_min); real_today=datetime.now().date(); cutoff=earliest if day!=real_today else datetime.now()
@@ -177,6 +198,7 @@ def list_available_slots(day_dt,duration_min):
             if cur>=cutoff and ok: slots.append(cur)
         cur+=step
     return slots
+
 def make_ics(summary,start_dt,duration_min,description=""):
     end_dt=start_dt+timedelta(minutes=duration_min); fmt=lambda dt: dt.strftime("%Y%m%dT%H%M%S")
     uid=f"{int(time.time())}-{abs(hash(summary))}@stress-aware"; desc=description.replace("\\n"," ")
@@ -192,6 +214,7 @@ def series_svg(series):
     svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none'>"
     svg+="<defs><linearGradient id='grad' x1='0' x2='1'><stop offset='0%' stop-color='#ff6aa9'/><stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs>"
     svg+=f"<polyline points='{pts}' fill='none' stroke='url(#grad)' stroke-width='2'/></svg>"; return svg
+
 def svg_tag(svg):
     return f"<img src='data:image/svg+xml;utf8,{urllib.parse.quote(svg)}' width='288' height='120'/>"
 
@@ -207,6 +230,7 @@ def generate_demo_series(peaks,length=48):
         for j in range(-2,3):
             idx=max(0,min(length-1,c+j)); s[idx]+=randint(10,25)*(1-abs(j)/3)
     return s
+
 def ensure_series_for_demo_day():
     key=f"series_{st.session_state.get('demo_day_offset',0)}"
     if st.session_state.get("fitbit_series_today_key")==key: return
@@ -225,9 +249,11 @@ def bandit_choose(favs,epsilon=0.05,tau=0.8):
         cum+=v/tot
         if r<=cum: return a,dict(scores)
     return exps[-1][0],dict(scores)
+
 def bandit_update(activity,delta_stress,exp_rating):
     stt=st.session_state["model"]["overall"].setdefault(activity,{"n":0,"value":0.0})
     reward=float(delta_stress)+0.2*(float(exp_rating)-5.0); n=stt["n"]+1; stt["value"]+= (reward-stt["value"])/n; stt["n"]=n
+
 def expectation_text(activity):
     s=st.session_state["model"]["overall"].get(activity,{"n":0,"value":0}); n=s["n"]; m=s["value"]
     if n==0: return "I don’t know much about this type of break yet — let’s see how it affects you."
@@ -237,6 +263,25 @@ def expectation_text(activity):
     if m<2.5: return "Expected to provide a gentle relief of stress."
     if m<4: return "Expected to noticeably lower stress."
     return "Often provides a strong reduction in stress."
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Calendar overview helper
+# ──────────────────────────────────────────────────────────────────────────────
+def todays_calendar_lines(day_dt: datetime):
+    """Return a list of strings describing today's busy events."""
+    events = st.session_state.get("calendar_events", [])
+    if not events: return []
+    day = day_dt.date()
+    lines = []
+    for s, e, title in events:
+        if s.date() != day and e.date() != day:
+            continue
+        # clamp to day for display
+        stt = s.strftime("%H:%M")
+        ett = e.strftime("%H:%M")
+        label = title if title else "Busy"
+        lines.append(f"<span class='when'>{stt}–{ett}</span> · {label}")
+    return sorted(lines)[:4]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pages
@@ -263,7 +308,7 @@ def page_initial():
                             default=defaults, label_visibility="collapsed",
                             key=ms_key, help="Tap to toggle. Multiple per row.")
 
-    # Inline add-custom (same section)
+    # Inline add-custom (same block)
     c1,c2=st.columns([0.7,0.3])
     with c1:
         new_act=st.text_input(" ", placeholder="Add custom (e.g., Journal 5m)",
@@ -279,7 +324,7 @@ def page_initial():
                 st.session_state["ms_version"]+=1
                 st.rerun()
 
-    # Calendar URL — **single input only**, auto-save & test on change
+    # Calendar URL — single input, auto-save/test
     st.markdown("<div class='wrapper'><div class='card'>", unsafe_allow_html=True)
     new_url = st.text_input(" ", value=st.session_state.get("calendar_url",""),
                             placeholder="Calendar (.ics) URL",
@@ -308,17 +353,27 @@ def ensure_series():
 
 def page_home():
     ensure_series()
-    series=st.session_state["fitbit_series_today"]; peaks=st.session_state["fitbit_peaks_today"]; high=peaks>4
+    series=st.session_state["fitbit_series_today"]
+    peaks=st.session_state["fitbit_peaks_today"]
+    high=peaks>4
 
     st.markdown(f"<div class='wrapper'><div class='hello'>Good Morning, friend</div>"
                 f"<div class='sub'>{now_local().strftime('%a %d %b')} · "
                 f"{st.session_state['weather']['precip']:.1f}mm · wind {st.session_state['weather']['wind']:.1f}m/s</div></div>",
                 unsafe_allow_html=True)
 
+    # Stress graph block + calendar mini overview
+    lines = todays_calendar_lines(now_local())
+    cal_html = "<div class='line'>No calendar connected</div>" if (not st.session_state.get("calendar_url")) else (
+        "<div class='line'>No events today</div>" if not lines else "".join([f"<div class='line'>{ln}</div>" for ln in lines])
+    )
     st.markdown("<div class='wrapper'><div class='block'><div class='badge'>Stress Overview</div>"
-                "<div class='stress-visual-wrap'><div class='stress-visual'><div class='viz-label'>Demo stress (Fitbit-like)</div>"
+                "<div class='stress-visual-wrap'><div class='stress-visual'>"
+                "<div class='viz-label'>Demo stress (Fitbit-like)</div>"
                 f"{svg_tag(series_svg(series))}</div></div>"
-                f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div></div></div>", unsafe_allow_html=True)
+                f"<div class='sub' style='text-align:center;'>Peaks today: <b>{peaks}</b></div>"
+                f"<div class='calmini'>{cal_html}</div>"
+                "</div></div>", unsafe_allow_html=True)
 
     msg="High stress detected — a break is recommended" if high else "No excess stress — you can schedule a break"
     st.markdown(f"<div class='wrapper'><div class='badge'>{msg}</div></div>", unsafe_allow_html=True)
@@ -330,7 +385,8 @@ def page_home():
     with col2: ref=st.button("Refresh calendar", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    if ref and st.session_state.get("calendar_url"): fetch_and_cache_calendar(st.session_state["calendar_url"]); st.rerun()
+    if ref and st.session_state.get("calendar_url"): 
+        fetch_and_cache_calendar(st.session_state["calendar_url"]); st.rerun()
     if go:
         favs=st.session_state["favorite_activities"]
         if favs:
@@ -356,8 +412,7 @@ def page_rec():
     c1,c2,c3=st.columns(3)
     with c1: back=st.button("Back", use_container_width=True)
     with c2: accept=st.button("Accept", use_container_width=True)
-    with c3:
-        diff=st.button("Suggest different", use_container_width=True)
+    with c3: diff=st.button("Suggest different", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
     if back: st.session_state["page"]="home"; st.rerun()
     if diff:
