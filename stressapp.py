@@ -8,7 +8,7 @@ from random import randint, random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo  # <-- ensure local time is Europe/Amsterdam
 
-APP_VERSION = "v1.0.4"
+APP_VERSION = "v1.0.4 (DBM140 Group 6)"
 TZ = ZoneInfo("Europe/Amsterdam")
 
 st.set_page_config(page_title="Stress-Aware Break Scheduler", page_icon="🧠", layout="centered")
