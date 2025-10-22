@@ -8,7 +8,7 @@ from random import randint, random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo  # timezone correctness
 
-APP_VERSION = "v1.0.5"
+APP_VERSION = "v1.0.6"
 TZ = ZoneInfo("Europe/Amsterdam")
 SMA_THRESHOLD = 50  # trigger a break when SMA < 50
 
@@ -42,7 +42,7 @@ html,body,.stApp,[data-testid="stAppViewContainer"], .stAppViewContainer, .main,
 }
 .h1,.rec-title,.hello{color:var(--ink);font-weight:700;line-height:1.3;margin-bottom:8px;font-size:1.25rem;}
 .p,.sub{color:var(--ink-sub);line-height:1.55;font-size:1rem;}
-.p.lead-space{margin-bottom:14px;}
+.p.lead-space{margin-bottom:14px;}  /* extra spacing under step-1 explanation */
 
 .badge{background:#ffd7e6;color:#8a3a5b;border-radius:999px;padding:6px 12px;font-weight:600;display:inline-block}
 
@@ -56,7 +56,7 @@ html,body,.stApp,[data-testid="stAppViewContainer"], .stAppViewContainer, .main,
 /* Inputs */
 div[data-baseweb="input"]>div{border-radius:14px;border:1px solid var(--border)}
 
-/* Stress graph centered */
+/* Visual wrapper */
 .stress-visual-wrap{display:flex;justify-content:center;align-items:center;margin-top:18px;width:100%}
 .stress-visual{max-width:320px;width:100%;background:#fff;border-radius:14px;border:1px solid var(--border);padding:12px;box-sizing:border-box;text-align:center}
 .viz-label{font-size:.8rem;color:#7f5b69;background:#fff0f6;border:1px solid var(--border);padding:3px 10px;border-radius:999px;margin-bottom:8px;display:inline-block}
@@ -107,9 +107,8 @@ def ss_init():
     ss.setdefault("calendar_url",""); ss.setdefault("calendar_events",[]); ss.setdefault("calendar_last_status","")
     ss.setdefault("accept_duration",15); ss.setdefault("accept_start_choice",None)
     ss.setdefault("demo_day_offset",0)
-    ss.setdefault("fitbit_series_today",None)  # visual only
-    ss.setdefault("sma_today", None)           # real trigger
-    ss.setdefault("fitbit_series_today_key",None)
+    ss.setdefault("sma_today", None)           # SMA drives trigger
+    ss.setdefault("fitbit_series_today_key",None)  # cache key
     for a in ss["all_activities"]:
         ss["model"]["overall"].setdefault(a,{"n":0,"value":0.0})
 
@@ -232,22 +231,31 @@ def make_ics(summary, start_dt, duration_min, description=""):
     return "\n".join(ics).encode("utf-8")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Visuals (pretty line; not tied to logic)
+# Visual: SMA gradient bar (pastel red → yellow → green)
 # ──────────────────────────────────────────────────────────────────────────────
-def series_svg(series):
-    n=len(series); w,h=288,120; pad=8; mn,mx=min(series),max(series); rng=max(1,mx-mn)
-    sx=lambda i: pad+(w-2*pad)*(i/max(1,n-1)); sy=lambda v: pad+(h-2*pad)*(1-(v-mn)/rng)
-    pts=" ".join([f"{sx(i):.1f},{sy(v):.1f}" for i,v in enumerate(series)])
-    svg=f"<svg width='{w}' height='{h}' viewBox='0 0 {w} {h}' xmlns='http://www.w3.org/2000/svg' preserveAspectRatio='none'>"
-    svg+="<defs><linearGradient id='grad' x1='0' x2='1'><stop offset='0%' stop-color='#ff6aa9'/><stop offset='100%' stop-color='#f9a7c1'/></linearGradient></defs>"
-    svg+=f"<polyline points='{pts}' fill='none' stroke='url(#grad)' stroke-width='2'/></svg>"; return svg
+def sma_gradient_svg(score: int):
+    """Return a pastel horizontal gradient bar with a circular marker for SMA (1–100)."""
+    w, h = 288, 30
+    # clamp score and map to [0, w-16] then offset by radius (8) so the circle stays within
+    s = 0 if score is None else max(0, min(int(score), 100))
+    x = (w - 16) * s / 100.0
+    svg = f"""
+    <svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="smaGrad" x1="0" x2="1" y1="0" y2="0">
+          <stop offset="0%" stop-color="#ffb3c6"/>
+          <stop offset="50%" stop-color="#ffeabf"/>
+          <stop offset="100%" stop-color="#b5f5b2"/>
+        </linearGradient>
+      </defs>
+      <rect x="0" y="{h/3:.1f}" width="{w}" height="{h/3:.1f}" rx="8" fill="url(#smaGrad)" />
+      <circle cx="{x+8:.1f}" cy="{h/2:.1f}" r="6" fill="#432838" opacity="0.8" />
+    </svg>
+    """
+    return svg
 
-def svg_tag(svg):
-    return f"<img src='data:image/svg+xml;utf8,{urllib.parse.quote(svg)}' width='288' height='120'/>"
-
-def generate_visual_series(length=48):
-    base = randint(45, 65)
-    return [base + 4*math.sin(i/6.0) + randint(-3,3) for i in range(length)]
+def svg_tag(svg: str, width=288, height=30):
+    return f"<img src='data:image/svg+xml;utf8,{urllib.parse.quote(svg)}' width='{width}' height='{height}'/>"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Demo SMA generator (drives break trigger; number not shown)
@@ -259,9 +267,8 @@ def generate_demo_sma():
     return randint(55, 85)     # okay/good
 
 def ensure_today_data():
-    key=f"series_{st.session_state.get('demo_day_offset',0)}"
+    key=f"sma_{st.session_state.get('demo_day_offset',0)}"
     if st.session_state.get("fitbit_series_today_key")==key: return
-    st.session_state["fitbit_series_today"]=generate_visual_series()
     st.session_state["sma_today"]=generate_demo_sma()
     st.session_state["fitbit_series_today_key"]=key
     st.session_state["weather"]=fetch_weather()
@@ -328,7 +335,7 @@ def page_initial():
         </p>
     """, unsafe_allow_html=True)
 
-    # Favorites + Add custom
+    # Favorites + Add custom (same card)
     ms_key=f"fav_ms_{st.session_state['ms_version']}"
     defaults=st.session_state.get("favorite_activities",[])
     selected=st.multiselect("Your favorite activities",
@@ -351,7 +358,7 @@ def page_initial():
                 st.session_state["ms_version"]+=1
                 st.rerun()
 
-    # Calendar URL (same card) + Save
+    # Calendar URL + Save (same card)
     cal_col1, cal_col2 = st.columns([0.68, 0.32])
     with cal_col1:
         cal_val = st.text_input(" ", value=st.session_state.get("calendar_url",""),
@@ -377,10 +384,10 @@ def page_initial():
     render_footer()
 
 def page_home():
+    # Prepare daily data
     ensure_today_data()
 
-    series=st.session_state["fitbit_series_today"]  # visual only
-    sma = st.session_state["sma_today"]             # actual trigger
+    sma = st.session_state["sma_today"]
     low_sma = (sma is not None and sma < SMA_THRESHOLD)
 
     st.markdown(f"<div class='wrapper'><div class='hello'>Good Morning, friend</div>"
@@ -388,15 +395,16 @@ def page_home():
                 f"{st.session_state['weather']['precip']:.1f}mm · wind {st.session_state['weather']['wind']:.1f}m/s</div></div>",
                 unsafe_allow_html=True)
 
-    # Stress management card (no numbers shown)
+    # SMA gradient bar + calendar mini-overview
     lines = todays_calendar_lines(now_local())
     cal_html = "<div class='line'>No calendar connected</div>" if (not st.session_state.get("calendar_url")) else (
         "<div class='line'>No events today</div>" if not lines else "".join([f"<div class='line'>{ln}</div>" for ln in lines])
     )
+    grad_svg = sma_gradient_svg(sma if sma is not None else 50)
     st.markdown("<div class='wrapper'><div class='block'><div class='badge'>Stress Overview</div>"
                 "<div class='stress-visual-wrap'><div class='stress-visual'>"
                 "<div class='viz-label'>Daily Stress Management Score (demo)</div>"
-                f"{svg_tag(series_svg(series))}</div></div>"
+                f"{svg_tag(grad_svg)}</div></div>"
                 f"<div class='calmini'><div class='title'>schedule today</div>{cal_html}</div>"
                 "</div></div>", unsafe_allow_html=True)
 
